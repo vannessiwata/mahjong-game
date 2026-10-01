@@ -200,99 +200,6 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
   }, [addLog]);
 
   /**
-   * Check claims on the newly discarded tile for all players.
-   */
-  const processDiscardClaims = useCallback(() => {
-    const state = stateRef.current;
-    if (state.phase !== 'claim_window' || !state.lastDiscard) return;
-
-    const { tile, seat: discardSeat } = state.lastDiscard;
-    const localSeat = localPlayerSeat;
-    const localPlayer = state.players[localSeat];
-
-    // Check actions available for human player if human is NOT the discarder
-    if (localSeat !== discardSeat) {
-      const actions: AvailableAction[] = [];
-
-      // 1. Hu?
-      if (isWinningHand(localPlayer.hand, tile)) {
-        const { qualifies } = calculateFans(
-          localPlayer.hand,
-          localPlayer.melds,
-          tile,
-          false,
-          localSeat,
-          state.prevWind,
-          localPlayer.flowers,
-          state.settings.minFan
-        );
-        if (qualifies) {
-          actions.push({ type: 'hu', tile });
-        }
-      }
-
-      // 2. Gang?
-      if (canExposedGang(localPlayer.hand, tile)) {
-        actions.push({ type: 'gang', tile });
-      }
-
-      // 3. Peng?
-      if (canPeng(localPlayer.hand, tile)) {
-        actions.push({ type: 'peng', tile });
-      }
-
-      // 4. Chi? (Only from player to the left: (localSeat - 1 + 4) % 4 === discardSeat)
-      if ((localSeat - 1 + 4) % 4 === discardSeat) {
-        const chiOptions = getChiOptions(localPlayer.hand, tile);
-        if (chiOptions.length > 0) {
-          actions.push({ type: 'chi', options: chiOptions, tile });
-        }
-      }
-
-      if (actions.length > 0) {
-        setAvailableActions(actions);
-        return; // Wait for human decision
-      }
-    }
-
-    // Bots claims evaluation
-    let highestClaim: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] } | null = null;
-
-    for (const player of state.players) {
-      if (player.seat === discardSeat || !player.isBot) continue;
-
-      const decision = botDecideClaim(
-        player,
-        tile,
-        discardSeat,
-        state.prevWind,
-        state.settings.minFan
-      );
-
-      if (decision.type === 'hu') {
-        highestClaim = { seat: player.seat, type: 'hu' };
-        break; // Hu has ultimate priority
-      } else if (decision.type === 'gang' && (!highestClaim || highestClaim.type === 'chi')) {
-        highestClaim = { seat: player.seat, type: 'gang', tiles: decision.tiles };
-      } else if (decision.type === 'peng' && (!highestClaim || highestClaim.type === 'chi')) {
-        highestClaim = { seat: player.seat, type: 'peng', tiles: decision.tiles };
-      } else if (decision.type === 'chi' && !highestClaim) {
-        highestClaim = { seat: player.seat, type: 'chi', tiles: decision.tiles };
-      }
-    }
-
-    if (highestClaim) {
-      executeClaim(highestClaim.seat, highestClaim.type, highestClaim.tiles);
-    } else {
-      // No claims -> next player draws from wall!
-      const nextSeat = (discardSeat + 1) % 4;
-      setTimeout(() => {
-        drawTileForSeat(nextSeat);
-      }, 500);
-    }
-  }, [localPlayerSeat, drawTileForSeat]);
-
-  /**
    * Execute a claim (Hu, Gang, Peng, Chi).
    */
   const executeClaim = useCallback((
@@ -415,6 +322,123 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
   }, [addLog, setBotStatus, drawTileForSeat]);
 
   /**
+   * Check claims on the newly discarded tile for all players.
+   */
+  const processDiscardClaims = useCallback(() => {
+    const state = stateRef.current;
+    if (state.phase !== 'claim_window' || !state.lastDiscard) return;
+
+    const { tile, seat: discardSeat } = state.lastDiscard;
+    const localSeat = localPlayerSeat;
+    const localPlayer = state.players[localSeat];
+
+    // Check actions available for human player if human is NOT the discarder
+    if (localSeat !== discardSeat) {
+      const actions: AvailableAction[] = [];
+
+      // 1. Hu?
+      if (isWinningHand(localPlayer.hand, tile)) {
+        const { qualifies } = calculateFans(
+          localPlayer.hand,
+          localPlayer.melds,
+          tile,
+          false,
+          localSeat,
+          state.prevWind,
+          localPlayer.flowers,
+          state.settings.minFan
+        );
+        if (qualifies) {
+          actions.push({ type: 'hu', tile });
+        }
+      }
+
+      // 2. Gang?
+      if (canExposedGang(localPlayer.hand, tile)) {
+        actions.push({ type: 'gang', tile });
+      }
+
+      // 3. Peng?
+      if (canPeng(localPlayer.hand, tile)) {
+        actions.push({ type: 'peng', tile });
+      }
+
+      // 4. Chi? (Only from player to the left: (localSeat - 1 + 4) % 4 === discardSeat)
+      if ((localSeat - 1 + 4) % 4 === discardSeat) {
+        const chiOptions = getChiOptions(localPlayer.hand, tile);
+        if (chiOptions.length > 0) {
+          actions.push({ type: 'chi', options: chiOptions, tile });
+        }
+      }
+
+      if (actions.length > 0) {
+        setAvailableActions(actions);
+        return; // Wait for human decision
+      }
+    }
+
+    // Bots claims evaluation
+    let highestClaim: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] } | null = null;
+
+    for (const player of state.players) {
+      if (player.seat === discardSeat || !player.isBot) continue;
+
+      const decision = botDecideClaim(
+        player,
+        tile,
+        discardSeat,
+        state.prevWind,
+        state.settings.minFan
+      );
+
+      if (decision.type === 'hu') {
+        highestClaim = { seat: player.seat, type: 'hu' };
+        break; // Hu has ultimate priority
+      } else if (decision.type === 'gang' && (!highestClaim || highestClaim.type === 'chi')) {
+        highestClaim = { seat: player.seat, type: 'gang', tiles: decision.tiles };
+      } else if (decision.type === 'peng' && (!highestClaim || highestClaim.type === 'chi')) {
+        highestClaim = { seat: player.seat, type: 'peng', tiles: decision.tiles };
+      } else if (decision.type === 'chi' && !highestClaim) {
+        highestClaim = { seat: player.seat, type: 'chi', tiles: decision.tiles };
+      }
+    }
+
+    if (highestClaim) {
+      executeClaim(highestClaim.seat, highestClaim.type, highestClaim.tiles);
+      if (roomId) {
+        try {
+          const socket = getSocket();
+          socket.emit('game_action', {
+            roomId,
+            actionType: 'claim',
+            payload: { seat: highestClaim.seat, claimType: highestClaim.type, tiles: highestClaim.tiles },
+          });
+        } catch (e) {
+          console.error('Failed to emit claim:', e);
+        }
+      }
+    } else {
+      // No claims -> next player draws from wall!
+      const nextSeat = (discardSeat + 1) % 4;
+      setTimeout(() => {
+        drawTileForSeat(nextSeat);
+        if (roomId) {
+          try {
+            const socket = getSocket();
+            socket.emit('game_action', {
+              roomId,
+              actionType: 'draw',
+              payload: { seat: nextSeat },
+            });
+          } catch (e) {
+            console.error('Failed to emit draw:', e);
+          }
+        }
+      }, 500);
+    }
+  }, [localPlayerSeat, drawTileForSeat, roomId, executeClaim]);
+
+  /**
    * Human passes on claiming discard.
    */
   const handlePass = useCallback(() => {
@@ -507,8 +531,11 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
   }, [localPlayerSeat, addLog, drawTileForSeat]);
 
   // Handle active bot turn (Bot draws or discards)
+  // In multiplayer room, ONLY host (seat 0) simulates bot moves to prevent dual simulation!
   useEffect(() => {
     if (gameState.phase !== 'playing') return;
+
+    if (roomId && localSeatRef.current !== 0) return;
 
     const activePlayer = gameState.players[gameState.currentTurn];
     if (!activePlayer.isBot) return;
@@ -567,10 +594,23 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       // Bot discards a tile
       const discard = botChooseDiscard(bot);
       discardTile(bot.seat, discard);
+
+      if (roomId) {
+        try {
+          const socket = getSocket();
+          socket.emit('game_action', {
+            roomId,
+            actionType: 'discard',
+            payload: { seat: bot.seat, tile: discard },
+          });
+        } catch (e) {
+          console.error('Failed to emit bot discard:', e);
+        }
+      }
     }, 900);
 
     return () => clearTimeout(timer);
-  }, [gameState.phase, gameState.currentTurn, gameState.players, discardTile, addLog]);
+  }, [gameState.phase, gameState.currentTurn, gameState.players, discardTile, addLog, roomId]);
 
   // Reset 2-minute timer on every turn change
   useEffect(() => {
@@ -604,11 +644,9 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     return () => clearInterval(timer);
   }, [gameState.phase, gameState.currentTurn, addLog, discardTile]);
 
-  // Handle claim window transition (only local host/dealer or solo triggers claims evaluation)
+  // Handle claim window transition
   useEffect(() => {
     if (gameState.phase === 'claim_window') {
-      // In multiplayer, if not seat 0, let seat 0 (or host) process bot decisions,
-      // but all players check their own local human claim actions!
       const timer = setTimeout(() => {
         processDiscardClaims();
       }, 200);
