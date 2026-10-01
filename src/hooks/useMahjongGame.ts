@@ -331,6 +331,7 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     const { tile, seat: discardSeat } = state.lastDiscard;
     const localSeat = localPlayerSeat;
     const localPlayer = state.players[localSeat];
+    const isHost = localSeat === 0;
 
     // Check actions available for human player if human is NOT the discarder
     if (localSeat !== discardSeat) {
@@ -376,6 +377,10 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
         return; // Wait for human decision
       }
     }
+
+    // In multiplayer mode, only HOST (seat 0) evaluates bots and triggers next draw.
+    // Non-host players wait for peer_game_action events to update their state.
+    if (roomId && !isHost) return;
 
     // Bots claims evaluation
     let highestClaim: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] } | null = null;

@@ -96,17 +96,24 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`[Socket] Disconnected: ${socket.id}`);
+    const BOT_NAMES = ['Bot East', 'Bot South', 'Bot West', 'Bot North'];
     for (const [roomId, room] of rooms.entries()) {
       const idx = room.players.findIndex((p) => p.id === socket.id);
       if (idx !== -1) {
         room.players[idx] = {
           id: null,
-          name: `Bot ${idx + 1}`,
+          name: BOT_NAMES[idx] || `Bot ${idx + 1}`,
           seat: idx,
           isBot: true,
           isReady: true,
         };
         io.to(roomId).emit('room_updated', { players: room.players });
+        // Clean up empty rooms to save memory
+        const hasRealPlayers = room.players.some(p => p.id !== null && !p.isBot);
+        if (!hasRealPlayers) {
+          rooms.delete(roomId);
+          console.log(`[Room ${roomId}] Deleted (no real players remaining)`);
+        }
       }
     }
   });

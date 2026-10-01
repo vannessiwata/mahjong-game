@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Users, Bot, Play, Sparkles, BookOpen, Settings } from 'lucide-react';
+import { Users, Bot, Play, Sparkles, BookOpen, Settings, RefreshCw, Copy, Check } from 'lucide-react';
 import { RulesModal } from './RulesModal';
 
 interface LobbyProps {
@@ -9,19 +9,56 @@ interface LobbyProps {
   onJoinRoom: (options: { roomId: string; playerName: string; minFan: number }) => void;
 }
 
+// Generate random 5-character alphanumeric room code (e.g. "HK88M", "MAH77")
+const generateRandomRoomCode = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let result = '';
+  for (let i = 0; i < 5; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
 export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
   const [mode, setMode] = useState<'solo' | 'multiplayer'>('solo');
-  const [playerName, setPlayerName] = useState('Player 1');
-  const [roomId, setRoomId] = useState('ROOM88');
+  const [playerName, setPlayerName] = useState('');
+  const [roomId, setRoomId] = useState(generateRandomRoomCode());
   const [minFan, setMinFan] = useState<number>(3);
   const [includeFlowers, setIncludeFlowers] = useState(true);
   const [showRules, setShowRules] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleRandomizeRoom = () => {
+    setRoomId(generateRandomRoomCode());
+  };
+
+  const handleCopyRoomCode = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(roomId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
 
   const handleStart = () => {
-    if (mode === 'solo') {
-      onStartSolo({ playerName, minFan, includeFlowers });
+    const trimmedName = playerName.trim();
+    if (!trimmedName) {
+      setErrorMessage('⚠️ Silakan masukkan nama pemain terlebih dahulu (Nama wajib diisi)!');
+      return;
+    }
+
+    if (mode === 'multiplayer') {
+      const trimmedRoom = roomId.trim().toUpperCase();
+      if (!trimmedRoom) {
+        setErrorMessage('⚠️ Room code tidak boleh kosong!');
+        return;
+      }
+      setErrorMessage(null);
+      onJoinRoom({ roomId: trimmedRoom, playerName: trimmedName, minFan });
     } else {
-      onJoinRoom({ roomId, playerName, minFan });
+      setErrorMessage(null);
+      onStartSolo({ playerName: trimmedName, minFan, includeFlowers });
     }
   };
 
@@ -32,7 +69,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
 
       {/* Header / Brand */}
-      <div className="relative z-10 flex flex-col items-center text-center mb-8">
+      <div className="relative z-10 flex flex-col items-center text-center mb-6">
         <div className="flex items-center gap-2 mb-2">
           <span className="text-5xl animate-bounce-subtle">🀄</span>
         </div>
@@ -48,11 +85,14 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
       </div>
 
       {/* Main Mode Selection Card */}
-      <div className="relative z-10 w-full max-w-md bg-slate-900/90 border border-slate-700/80 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl flex flex-col gap-6">
+      <div className="relative z-10 w-full max-w-md bg-slate-900/90 border border-slate-700/80 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl flex flex-col gap-5">
         {/* Mode Tabs */}
         <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800">
           <button
-            onClick={() => setMode('solo')}
+            onClick={() => {
+              setMode('solo');
+              setErrorMessage(null);
+            }}
             className={`flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-xs transition ${
               mode === 'solo'
                 ? 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white shadow-md'
@@ -63,7 +103,10 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
             <span>Solo vs 3 Bots</span>
           </button>
           <button
-            onClick={() => setMode('multiplayer')}
+            onClick={() => {
+              setMode('multiplayer');
+              setErrorMessage(null);
+            }}
             className={`flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-xs transition ${
               mode === 'multiplayer'
                 ? 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white shadow-md'
@@ -75,35 +118,75 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
           </button>
         </div>
 
+        {/* Error message alert */}
+        {errorMessage && (
+          <div className="p-3 bg-red-950/80 border border-red-500/50 rounded-xl text-xs text-red-200 font-medium text-left animate-shake">
+            {errorMessage}
+          </div>
+        )}
+
         {/* Inputs */}
         <div className="flex flex-col gap-4 text-xs">
-          {/* Player Name */}
+          {/* Player Name (Wajib) */}
           <div className="flex flex-col gap-1.5 text-left">
-            <label className="text-slate-300 font-bold">Your Player Name:</label>
+            <div className="flex items-center justify-between">
+              <label className="text-slate-200 font-bold flex items-center gap-1">
+                <span>Nama Pemain</span>
+                <span className="text-red-400">*</span>
+              </label>
+              <span className="text-[10px] text-amber-400 font-semibold">(Wajib diisi)</span>
+            </div>
             <input
               type="text"
               value={playerName}
-              onChange={(e) => setPlayerName(e.target.value)}
-              className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white font-medium focus:border-amber-400 outline-none transition"
-              placeholder="e.g. Master Mahjong"
+              onChange={(e) => {
+                setPlayerName(e.target.value);
+                if (errorMessage) setErrorMessage(null);
+              }}
+              className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white font-medium focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none transition"
+              placeholder="Masukkan nama Anda (misal: DragonKing)"
               maxLength={15}
+              required
             />
           </div>
 
           {/* Multiplayer Room Code Input */}
           {mode === 'multiplayer' && (
             <div className="flex flex-col gap-1.5 text-left">
-              <label className="text-slate-300 font-bold">Room Code (房間號碼):</label>
-              <input
-                type="text"
-                value={roomId}
-                onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-                className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-amber-300 font-mono font-bold tracking-widest uppercase focus:border-amber-400 outline-none transition"
-                placeholder="ROOM88"
-                maxLength={8}
-              />
-              <span className="text-[10px] text-slate-400">
-                Share this room code with friends to let them join your table.
+              <div className="flex items-center justify-between">
+                <label className="text-slate-200 font-bold">Room Code (Kode Room):</label>
+                <button
+                  type="button"
+                  onClick={handleRandomizeRoom}
+                  className="flex items-center gap-1 text-[11px] text-emerald-400 hover:text-emerald-300 font-semibold transition"
+                  title="Generate Room Code Baru"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Acak Kode Baru</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={roomId}
+                  onChange={(e) => setRoomId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-amber-300 font-mono font-bold tracking-widest uppercase focus:border-amber-400 focus:ring-1 focus:ring-amber-400 outline-none transition text-base text-center"
+                  placeholder="KODE"
+                  maxLength={8}
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyRoomCode}
+                  className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-slate-300 hover:text-white transition flex items-center justify-center gap-1"
+                  title="Salin Kode Room"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </div>
+
+              <span className="text-[10px] text-slate-400 leading-tight mt-0.5">
+                Bagikan kode ini ke teman Anda agar mereka bisa masuk ke room meja yang sama, atau ketik kode room teman Anda.
               </span>
             </div>
           )}
@@ -158,7 +241,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
           className="w-full py-3.5 rounded-2xl font-black text-white text-base bg-gradient-to-r from-amber-500 via-amber-600 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 shadow-xl shadow-amber-600/30 transition-all hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2 border border-amber-300/40"
         >
           <Play className="w-5 h-5 fill-white" />
-          <span>{mode === 'solo' ? 'Start Solo Game (開始遊戲)' : 'Enter Room (進入房間)'}</span>
+          <span>{mode === 'solo' ? 'Start Solo Game (開始遊戲)' : 'Masuk / Buat Room (進入房間)'}</span>
         </button>
 
         {/* Guide button */}
