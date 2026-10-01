@@ -84,79 +84,81 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, onBackToLobby 
   return (
     <div className="relative w-full h-screen bg-slate-950 flex flex-col justify-between overflow-hidden select-none">
       {/* Top Navbar */}
-      <header className="relative z-30 px-4 py-2.5 bg-slate-950/80 border-b border-emerald-800/40 backdrop-blur-md flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-2xl">🀄</span>
-          <div>
-            <h1 className="text-base font-extrabold text-white leading-none tracking-wide flex items-center gap-1.5">
-              <span>Hong Kong Mahjong</span>
-              <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-mono border border-amber-500/30">
+      <header className="relative z-30 px-2 sm:px-4 py-2 bg-slate-950/80 border-b border-emerald-800/40 backdrop-blur-md flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          <span className="text-xl sm:text-2xl flex-shrink-0">🀄</span>
+          <div className="min-w-0">
+            <h1 className="text-sm font-extrabold text-white leading-none tracking-wide flex items-center gap-1 flex-wrap">
+              <span className="hidden sm:inline">Hong Kong Mahjong</span>
+              <span className="sm:hidden">HK Mahjong</span>
+              <span className="text-[9px] sm:text-[10px] bg-amber-500/20 text-amber-300 px-1 py-0.5 rounded font-mono border border-amber-500/30 flex-shrink-0">
                 HK Rules
               </span>
               {roomId && (
-                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono border border-emerald-500/40">
-                  Room: {roomId}
+                <span className="text-[9px] sm:text-[10px] bg-emerald-500/20 text-emerald-300 px-1 py-0.5 rounded font-mono border border-emerald-500/40 flex-shrink-0">
+                  {roomId}
                 </span>
               )}
             </h1>
-            <span className="text-[10px] text-slate-400">
-              {roomId ? `Online Multiplayer • Seat ${['East (東)', 'South (南)', 'West (西)', 'North (北)'][localPlayerSeat]}` : 'Min 3 Fan • 4 Players'}
+            <span className="hidden sm:block text-[10px] text-slate-400">
+              {roomId ? `Online • ${['East (東)', 'South (南)', 'West (西)', 'North (北)'][localPlayerSeat]}` : 'Min 3 Fan • 4 Players'}
             </span>
           </div>
         </div>
 
         {/* Controls */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
           {/* Activity Log button */}
           <button
             onClick={() => setShowLogDrawer(!showLogDrawer)}
-            className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
+            className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
             title="Game Activity Log"
           >
-            <MessageSquare className="w-4 h-4" />
+            <MessageSquare className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
           {/* Sound Mute */}
           <button
             onClick={toggleMute}
-            className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
+            className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
             title={isMuted ? 'Unmute' : 'Mute'}
           >
-            {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+            {isMuted ? <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-400" /> : <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />}
           </button>
 
           {/* Rules Guide */}
           <button
             onClick={() => setShowRules(true)}
-            className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
+            className="hidden sm:flex p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
             title="Rules & Fan Guide"
           >
-            <HelpCircle className="w-4 h-4 text-amber-400" />
+            <HelpCircle className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />
           </button>
 
           {/* Start / Reset */}
           {gameState.phase === 'lobby' ? (
             <button
               onClick={handleStartOrRestart}
-              className="px-4 py-1.5 rounded-xl font-bold text-xs text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-lg shadow-emerald-700/30 flex items-center gap-1.5 border border-emerald-400/40 animate-pulse"
+              className="px-2 sm:px-4 py-1 sm:py-1.5 rounded-lg sm:rounded-xl font-bold text-[10px] sm:text-xs text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-lg shadow-emerald-700/30 flex items-center gap-1 border border-emerald-400/40 animate-pulse"
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Deal Hands (開局)</span>
+              <Sparkles className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              <span className="hidden sm:inline">Deal Hands (開局)</span>
+              <span className="sm:hidden">Deal!</span>
             </button>
           ) : (
             <button
               onClick={handleStartOrRestart}
-              className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
+              className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition"
               title="Restart Game"
             >
-              <RotateCcw className="w-4 h-4" />
+              <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
           )}
 
           {onBackToLobby && (
             <button
               onClick={onBackToLobby}
-              className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-white bg-slate-900 border border-slate-800 transition"
+              className="px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-semibold text-slate-400 hover:text-white bg-slate-900 border border-slate-800 transition"
             >
               Lobby
             </button>
@@ -182,7 +184,7 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, onBackToLobby 
         </div>
 
         {/* MIDDLE SECTION: LEFT OPPONENT, CENTER DISCARDS & COMPASS, RIGHT OPPONENT */}
-        <div className="relative z-10 w-full flex-1 flex items-center justify-between px-2 sm:px-6 max-w-6xl">
+        <div className="relative z-10 w-full flex-1 flex items-center justify-between px-0 sm:px-4">
           {/* LEFT OPPONENT */}
           <div className="flex justify-start">
             {leftPlayer && (
@@ -269,7 +271,7 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, onBackToLobby 
 
       {/* ACTIVITY FEED SLIDE DRAWER */}
       {showLogDrawer && (
-        <div className="absolute top-14 right-4 z-40 w-80 bg-slate-950/95 border border-slate-700/80 rounded-2xl shadow-2xl p-4 backdrop-blur-md animate-in slide-in-from-right-4 duration-150">
+        <div className="absolute top-12 right-0 sm:right-4 sm:top-14 z-40 w-full sm:w-80 bg-slate-950/95 border-t sm:border border-slate-700/80 sm:rounded-2xl shadow-2xl p-3 sm:p-4 backdrop-blur-md">
           <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
             <span className="text-xs font-bold text-amber-400">Game Activity Log</span>
             <button
@@ -279,7 +281,7 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, onBackToLobby 
               Close
             </button>
           </div>
-          <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto pr-1 text-xs text-slate-300">
+          <div className="flex flex-col gap-1.5 max-h-48 sm:max-h-64 overflow-y-auto pr-1 text-xs text-slate-300">
             {gameState.log.map((entry, idx) => (
               <div key={idx} className="leading-tight py-0.5 border-b border-slate-900/60 font-mono text-[11px]">
                 {entry}

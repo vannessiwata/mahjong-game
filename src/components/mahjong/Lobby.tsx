@@ -136,32 +136,32 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
   };
 
   return (
-    <div className="relative min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-4 overflow-hidden select-none">
+    <div className="relative min-h-screen w-full bg-slate-950 flex flex-col items-center justify-start sm:justify-center p-3 sm:p-4 py-6 sm:py-8 overflow-x-hidden select-none">
       {/* Ambient background glows */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-600/15 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
 
       {/* Header / Brand */}
-      <div className="relative z-10 flex flex-col items-center text-center mb-6">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-5xl animate-bounce-subtle">🀄</span>
+      <div className="relative z-10 flex flex-col items-center text-center mb-4 sm:mb-6">
+        <div className="flex items-center gap-2 mb-1 sm:mb-2">
+          <span className="text-4xl sm:text-5xl animate-bounce-subtle">🀄</span>
         </div>
-        <h1 className="text-4xl sm:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-yellow-100 to-amber-500 tracking-wider">
+        <h1 className="text-3xl sm:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-yellow-100 to-amber-500 tracking-wider">
           HONG KONG MAHJONG
         </h1>
-        <p className="text-sm sm:text-base text-emerald-400 font-serif font-bold mt-1 tracking-widest">
+        <p className="text-xs sm:text-base text-emerald-400 font-serif font-bold mt-1 tracking-widest">
           香港麻雀 • 傳統十三張規則
         </p>
-        <span className="text-xs text-slate-400 mt-1 max-w-sm">
+        <span className="hidden sm:block text-xs text-slate-400 mt-1 max-w-sm">
           Authentic 4-Player Hong Kong Mahjong with AI bots, turn-based claims, real-time fan scoring, and online rooms.
         </span>
       </div>
 
-      {/* Main layout: card + chat side by side */}
-      <div className="relative z-10 w-full max-w-3xl flex gap-4 items-start justify-center">
+      {/* Main layout: card + chat — stacks on mobile, side-by-side on lg+ */}
+      <div className="relative z-10 w-full max-w-3xl flex flex-col lg:flex-row gap-4 items-start justify-center">
 
       {/* Main Mode Selection Card */}
-      <div className="w-full max-w-md bg-slate-900/90 border border-slate-700/80 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl flex flex-col gap-5">
+      <div className="w-full lg:max-w-md bg-slate-900/90 border border-slate-700/80 rounded-3xl p-5 sm:p-8 shadow-2xl backdrop-blur-xl flex flex-col gap-4 sm:gap-5">
         {/* Mode Tabs */}
         <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800">
           <button
@@ -351,7 +351,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
 
       {/* ── Chat Panel ─────────────────────────────────────── */}
       {showChat && mode === 'multiplayer' && (
-        <div className="flex flex-col w-80 min-w-[18rem] bg-slate-900/90 border border-emerald-700/40 rounded-3xl shadow-2xl backdrop-blur-xl overflow-hidden" style={{ height: '520px' }}>
+        <div className="flex flex-col w-full lg:w-80 lg:min-w-[18rem] bg-slate-900/90 border border-emerald-700/40 rounded-3xl shadow-2xl backdrop-blur-xl overflow-hidden h-[60vh] lg:h-[520px]">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 bg-slate-950/80 border-b border-slate-800">
             <div className="flex items-center gap-2">

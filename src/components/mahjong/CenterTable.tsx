@@ -44,7 +44,7 @@ export const CenterTable: React.FC<CenterTableProps> = ({
   const isUrgent = timeLeft <= 20;
 
   return (
-    <div className="relative z-10 w-32 h-32 sm:w-36 sm:h-36 rounded-2xl bg-slate-950/95 border border-slate-800 shadow-[0_10px_25px_rgba(0,0,0,0.8)] flex flex-col items-center justify-between p-2.5 backdrop-blur-md select-none">
+    <div className="relative z-10 w-24 h-24 sm:w-32 sm:h-32 md:w-36 md:h-36 rounded-xl sm:rounded-2xl bg-slate-950/95 border border-slate-800 shadow-[0_10px_25px_rgba(0,0,0,0.8)] flex flex-col items-center justify-between p-1.5 sm:p-2.5 backdrop-blur-md select-none">
       {/* ---------------------------------------------------- */}
       {/* 4 OUTER DIRECTION BEACONS (NO OVERLAPPING NEEDLE)   */}
       {/* ---------------------------------------------------- */}
@@ -112,23 +112,23 @@ export const CenterTable: React.FC<CenterTableProps> = ({
       </div>
 
       {/* Center: Remaining Wall Counter & 2-Minute Turn Timer */}
-      <div className="my-auto flex flex-col items-center gap-1">
+      <div className="my-auto flex flex-col items-center gap-0.5 sm:gap-1">
         {/* Tile Counter */}
-        <div className="flex items-center gap-1.5 bg-emerald-950/80 px-2.5 py-0.5 rounded-md border border-emerald-600/40 text-emerald-300 text-xs font-mono font-bold shadow-inner">
-          <Layers className="w-3 h-3 text-emerald-400" />
-          <span>{wallCount} sisa</span>
+        <div className="flex items-center gap-1 sm:gap-1.5 bg-emerald-950/80 px-1.5 sm:px-2.5 py-0.5 rounded-md border border-emerald-600/40 text-emerald-300 text-[10px] sm:text-xs font-mono font-bold shadow-inner">
+          <Layers className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-emerald-400" />
+          <span>{wallCount}</span>
         </div>
 
-        {/* Turn Countdown Timer (2 minutes / 120s limit) */}
+        {/* Turn Countdown Timer */}
         <div
-          className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold transition-all ${
+          className={`flex items-center gap-1 px-1.5 sm:px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-mono font-bold transition-all ${
             isUrgent
               ? 'bg-red-950/95 text-red-400 border border-red-500/80 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.5)]'
               : 'bg-slate-900/90 text-slate-300 border border-slate-700/60'
           }`}
           title="Batas waktu giliran (2 menit)"
         >
-          <Clock className={`w-2.5 h-2.5 ${isUrgent ? 'text-red-400 animate-spin' : 'text-amber-400'}`} />
+          <Clock className={`w-2 h-2 sm:w-2.5 sm:h-2.5 ${isUrgent ? 'text-red-400 animate-spin' : 'text-amber-400'}`} />
           <span>{formattedTime}</span>
         </div>
       </div>
@@ -136,12 +136,12 @@ export const CenterTable: React.FC<CenterTableProps> = ({
       {/* Bottom Footer: Turn status badge */}
       <div className="w-full flex justify-center">
         {isMyTurn ? (
-          <div className="px-2 py-0.5 rounded-full text-[9.5px] font-black bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 shadow-md animate-pulse whitespace-nowrap">
-            ▶ GILIRAN ANDA ({windChars[currentTurn]})
+          <div className="px-1.5 sm:px-2 py-0.5 rounded-full text-[8px] sm:text-[9.5px] font-black bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 shadow-md animate-pulse whitespace-nowrap">
+            ▶ <span className="hidden sm:inline">GILIRAN ANDA</span><span className="sm:hidden">ANDA</span> ({windChars[currentTurn]})
           </div>
         ) : (
-          <div className="px-2 py-0.5 rounded-full text-[9.5px] font-semibold bg-slate-900 border border-slate-700/80 text-slate-300 whitespace-nowrap">
-            Giliran: <span className="text-amber-400 font-bold">{windChars[currentTurn]}</span>
+          <div className="px-1.5 sm:px-2 py-0.5 rounded-full text-[8px] sm:text-[9.5px] font-semibold bg-slate-900 border border-slate-700/80 text-slate-300 whitespace-nowrap">
+            <span className="hidden sm:inline">Giliran: </span><span className="text-amber-400 font-bold">{windChars[currentTurn]}</span>
           </div>
         )}
       </div>

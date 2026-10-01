@@ -28,10 +28,18 @@ export const Tile: React.FC<TileProps> = ({
 }) => {
   // Dimension ratios (Standard Mahjong tile ratio ~ 3:4)
   const sizeClasses = {
-    xs: horizontal ? 'w-8 h-6' : 'w-6 h-8 sm:w-7 sm:h-9',
-    sm: horizontal ? 'w-10 h-7' : 'w-7 h-10 sm:w-8 sm:h-11',
-    md: horizontal ? 'w-14 h-10' : 'w-10 h-14 sm:w-11 sm:h-16',
-    lg: horizontal ? 'w-18 h-13' : 'w-13 h-18 sm:w-15 sm:h-21',
+    xs: horizontal
+      ? 'w-7 h-5 sm:w-8 sm:h-6 aspect-[4/3]'
+      : 'w-5 h-7 sm:w-6 sm:h-8 aspect-[3/4]',
+    sm: horizontal
+      ? 'w-8 h-6 sm:w-10 sm:h-7 aspect-[4/3]'
+      : 'w-6 h-8 sm:w-7 sm:h-10 aspect-[3/4]',
+    md: horizontal
+      ? 'w-[32px] h-[24px] min-[380px]:w-[35px] min-[380px]:h-[26px] sm:w-14 sm:h-10 md:w-15 md:h-11 aspect-[4/3]'
+      : 'w-[23px] h-[32px] min-[360px]:w-[24px] min-[360px]:h-[33px] min-[390px]:w-[26px] min-[390px]:h-[36px] min-[430px]:w-[28px] min-[430px]:h-[38px] sm:w-10 sm:h-14 md:w-11 md:h-15 lg:w-12 lg:h-16 aspect-[3/4]',
+    lg: horizontal
+      ? 'w-14 h-10 sm:w-18 sm:h-13 aspect-[4/3]'
+      : 'w-10 h-14 sm:w-13 sm:h-18 md:w-15 md:h-20 aspect-[3/4]',
   }[size];
 
   // Face-down tile (Bamboo/Jade green layered back)
@@ -39,7 +47,7 @@ export const Tile: React.FC<TileProps> = ({
     return (
       <div
         className={`
-          relative rounded-[5px] select-none cursor-default
+          relative rounded-[4px] sm:rounded-[5px] select-none cursor-default shrink-0
           bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-950
           border border-emerald-500/50
           transition-all duration-200
@@ -52,9 +60,9 @@ export const Tile: React.FC<TileProps> = ({
         }}
       >
         {/* Subtle engraved bamboo diamond / coin pattern on tile back */}
-        <div className="absolute inset-1 rounded-[3px] border border-emerald-400/25 flex items-center justify-center overflow-hidden">
-          <div className="w-3 h-3 sm:w-4 sm:h-4 border border-emerald-300/40 rotate-45 rounded-sm flex items-center justify-center">
-            <div className="w-1 h-1 rounded-full bg-emerald-300/50"></div>
+        <div className="absolute inset-0.5 sm:inset-1 rounded-[3px] border border-emerald-400/25 flex items-center justify-center overflow-hidden">
+          <div className="w-2.5 h-2.5 sm:w-4 sm:h-4 border border-emerald-300/40 rotate-45 rounded-sm flex items-center justify-center">
+            <div className="w-0.5 h-0.5 sm:w-1 sm:h-1 rounded-full bg-emerald-300/50"></div>
           </div>
         </div>
       </div>
@@ -65,13 +73,13 @@ export const Tile: React.FC<TileProps> = ({
     <div
       onClick={!disabled ? onClick : undefined}
       className={`
-        relative rounded-[5px] select-none cursor-pointer
+        relative rounded-[4px] sm:rounded-[5px] select-none cursor-pointer shrink-0
         bg-gradient-to-b from-[#ffffff] via-[#faf7f0] to-[#eee5d3]
         border border-[#e0d6be] border-b-2 border-b-[#c2b498]
         flex flex-col items-center justify-center p-0.5
         transition-all duration-150 ease-out
         ${sizeClasses}
-        ${selected ? '-translate-y-3 ring-2 ring-amber-400 ring-offset-2 ring-offset-slate-900 shadow-2xl' : 'shadow-md hover:-translate-y-1 hover:shadow-lg'}
+        ${selected ? '-translate-y-2 sm:-translate-y-3 ring-2 ring-amber-400 ring-offset-1 sm:ring-offset-2 ring-offset-slate-900 shadow-2xl' : 'shadow-md hover:-translate-y-1 hover:shadow-lg'}
         ${highlighted ? 'ring-2 ring-red-500 animate-pulse' : ''}
         ${disabled ? 'opacity-60 cursor-not-allowed' : 'active:translate-y-0'}
         ${className}
@@ -84,7 +92,7 @@ export const Tile: React.FC<TileProps> = ({
       title={`${tile.name} (${tile.chinese})`}
     >
       {/* Dual layer edge highlight representing bone + bamboo backing */}
-      <div className="absolute inset-0 rounded-[4px] pointer-events-none border-t border-t-white/90 border-l border-l-white/60 border-r border-r-amber-200/40 border-b border-b-amber-300/50" />
+      <div className="absolute inset-0 rounded-[3px] sm:rounded-[4px] pointer-events-none border-t border-t-white/90 border-l border-l-white/60 border-r border-r-amber-200/40 border-b border-b-amber-300/50" />
 
       {/* Face Graphic */}
       <div className="relative w-full h-full flex items-center justify-center p-0.5 z-10 overflow-hidden">
@@ -92,7 +100,7 @@ export const Tile: React.FC<TileProps> = ({
       </div>
 
       {/* Subtle corner indicator for quick recognition on small screens */}
-      <div className="absolute top-0.5 left-1 text-[7px] text-slate-400/70 font-mono font-bold leading-none pointer-events-none z-20">
+      <div className="hidden min-[390px]:block absolute top-0.5 left-0.5 sm:left-1 text-[6px] sm:text-[7px] text-slate-400/70 font-mono font-bold leading-none pointer-events-none z-20">
         {tile.suit === 'wan' && `${tile.value}w`}
         {tile.suit === 'tong' && `${tile.value}t`}
         {tile.suit === 'tiao' && `${tile.value}s`}
@@ -134,18 +142,18 @@ const WanGraphic: React.FC<{ value: number; size: 'xs' | 'sm' | 'md' | 'lg' }> =
 
   // Neatly proportioned font sizes by tile size
   const fontSizes = {
-    xs: 'text-[9px] leading-tight',
-    sm: 'text-[11px] leading-tight',
-    md: 'text-[14px] sm:text-[15px] leading-tight',
-    lg: 'text-[17px] sm:text-[19px] leading-tight',
+    xs: 'text-[8px] sm:text-[9px] leading-tight',
+    sm: 'text-[9px] sm:text-[11px] leading-tight',
+    md: 'text-[11px] min-[390px]:text-[12px] sm:text-[15px] md:text-[16px] leading-tight',
+    lg: 'text-[16px] sm:text-[19px] leading-tight',
   }[size];
 
   return (
     <div className={`w-full h-full flex flex-col items-center justify-center select-none font-serif ${fontSizes}`}>
-      <span className={`${numColor} font-black tracking-tight scale-y-100`}>
+      <span className={`${numColor} font-black tracking-tight leading-none`}>
         {numChar}
       </span>
-      <span className="text-[#dc2626] font-black -mt-0.5 scale-y-100">
+      <span className="text-[#dc2626] font-black -mt-0.5 leading-none">
         萬
       </span>
     </div>
@@ -492,10 +500,10 @@ const WindGraphic: React.FC<{ value: number; size: 'xs' | 'sm' | 'md' | 'lg' }> 
 
   // Neatly proportioned font sizes with ample breathing room
   const fontSizes = {
-    xs: 'text-[11px] sm:text-[12px]',
-    sm: 'text-[13px] sm:text-[14px]',
-    md: 'text-[17px] sm:text-[19px]',
-    lg: 'text-[22px] sm:text-[24px]',
+    xs: 'text-[10px] sm:text-[12px]',
+    sm: 'text-[11px] sm:text-[14px]',
+    md: 'text-[13px] min-[390px]:text-[14px] sm:text-[18px] md:text-[20px]',
+    lg: 'text-[18px] sm:text-[24px]',
   }[size];
 
   return (
@@ -510,10 +518,10 @@ const WindGraphic: React.FC<{ value: number; size: 'xs' | 'sm' | 'md' | 'lg' }> 
 // ------------------------------------------
 const DragonGraphic: React.FC<{ value: number; size: 'xs' | 'sm' | 'md' | 'lg' }> = ({ value, size }) => {
   const fontSizes = {
-    xs: 'text-[12px] sm:text-[13px]',
-    sm: 'text-[14px] sm:text-[15px]',
-    md: 'text-[18px] sm:text-[20px]',
-    lg: 'text-[23px] sm:text-[25px]',
+    xs: 'text-[10px] sm:text-[12px]',
+    sm: 'text-[11px] sm:text-[14px]',
+    md: 'text-[13px] min-[390px]:text-[14px] sm:text-[18px] md:text-[20px]',
+    lg: 'text-[18px] sm:text-[24px]',
   }[size];
 
   if (value === 1) {
@@ -573,16 +581,16 @@ const FlowerGraphic: React.FC<{ value: number; size: 'xs' | 'sm' | 'md' | 'lg' }
   const color = isSeason ? '#dc2626' : '#1d4ed8';
 
   const fontSizes = {
-    xs: 'text-[9px]',
-    sm: 'text-[11px]',
-    md: 'text-[14px]',
-    lg: 'text-[17px]',
+    xs: 'text-[8px] sm:text-[9px]',
+    sm: 'text-[9px] sm:text-[11px]',
+    md: 'text-[10px] min-[390px]:text-[11px] sm:text-[14px] md:text-[16px]',
+    lg: 'text-[14px] sm:text-[18px]',
   }[size];
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center select-none font-serif leading-none relative">
       <span
-        className="absolute top-0 right-1 text-[7px] font-bold font-mono"
+        className="absolute top-0.5 right-0.5 text-[6px] sm:text-[7px] font-bold font-mono"
         style={{ color }}
       >
         {numIndex}
@@ -593,7 +601,7 @@ const FlowerGraphic: React.FC<{ value: number; size: 'xs' | 'sm' | 'md' | 'lg' }
       >
         {char}
       </span>
-      <span className="text-[6.5px] text-amber-700/80 font-bold uppercase tracking-wider mt-0.5">
+      <span className="hidden min-[390px]:block text-[5.5px] sm:text-[6.5px] text-amber-700/80 font-bold uppercase tracking-wider mt-0.5">
         {isSeason ? 'Season' : 'Flower'}
       </span>
     </div>
