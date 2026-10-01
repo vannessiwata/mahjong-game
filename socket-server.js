@@ -1,7 +1,3 @@
-# Socket.IO Standalone Server (for Railway deployment)
-# This is a standalone Express + Socket.IO server for multiplayer.
-# Railway will run this file using: node socket-server.js
-
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 
