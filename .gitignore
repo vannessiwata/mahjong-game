@@ -17,6 +17,10 @@
 /.next/
 /out/
 
+# env files (keep .env.production.example but not actual secrets)
+.env.local
+.env.production
+
 # production
 /build
 

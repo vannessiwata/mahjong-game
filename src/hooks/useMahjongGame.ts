@@ -1,0 +1,619 @@
+'use client';
+
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { GameState, Player, Tile, WinResult, AvailableAction } from '@/lib/mahjong/types';
+import { generateTileDeck, shuffleDeck, areTilesEqual } from '@/lib/mahjong/tiles';
+import { canPeng, canExposedGang, getChiOptions, isWinningHand, calculateFans, getSelfGangOptions } from '@/lib/mahjong/rules';
+import { botChooseDiscard, botDecideClaim, botDecideSelfAction } from '@/lib/mahjong/bot';
+import { sound } from '@/lib/mahjong/audio';
+
+const INITIAL_PLAYERS: Player[] = [
+  { id: 'p0', name: 'You (East)', isBot: false, avatar: '🐉', seat: 0, hand: [], melds: [], flowers: [], discards: [], score: 1000, isReady: true, isHost: true },
+  { id: 'p1', name: 'Bot Ling (South)', isBot: true, avatar: '🌸', seat: 1, hand: [], melds: [], flowers: [], discards: [], score: 1000, isReady: true },
+  { id: 'p2', name: 'Bot Ken (West)', isBot: true, avatar: '🎋', seat: 2, hand: [], melds: [], flowers: [], discards: [], score: 1000, isReady: true },
+  { id: 'p3', name: 'Bot Ming (North)', isBot: true, avatar: '🐅', seat: 3, hand: [], melds: [], flowers: [], discards: [], score: 1000, isReady: true },
+];
+
+export function useMahjongGame() {
+  const [gameState, setGameState] = useState<GameState>({
+    roomId: 'LOCAL_ROOM',
+    phase: 'lobby',
+    settings: {
+      minFan: 3,
+      maxFan: 10,
+      includeFlowers: true,
+      turnTimeLimit: 0,
+    },
+    players: INITIAL_PLAYERS,
+    wall: [],
+    deadWall: [],
+    currentTurn: 0,
+    dealerSeat: 0,
+    prevWind: 'east',
+    pendingClaims: {},
+    log: ['Welcome to Hong Kong Mahjong! Choose Solo vs AI or Online Multiplayer.'],
+  });
+
+  const [localPlayerSeat, setLocalPlayerSeat] = useState<number>(0);
+  const [availableActions, setAvailableActions] = useState<AvailableAction[]>([]);
+  const [botStatusMessages, setBotStatusMessages] = useState<{ [seat: number]: string }>({});
+  const TURN_TIME_LIMIT = 120; // 2 minutes (120 seconds) per turn
+  const [timeLeft, setTimeLeft] = useState<number>(TURN_TIME_LIMIT);
+
+  const stateRef = useRef(gameState);
+  stateRef.current = gameState;
+
+  // Add message to in-game activity feed
+  const addLog = useCallback((msg: string) => {
+    setGameState(prev => ({
+      ...prev,
+      log: [msg, ...prev.log.slice(0, 30)],
+    }));
+  }, []);
+
+  // Set bot temporary action message bubble
+  const setBotStatus = useCallback((seat: number, text: string, duration = 1200) => {
+    setBotStatusMessages(prev => ({ ...prev, [seat]: text }));
+    setTimeout(() => {
+      setBotStatusMessages(prev => {
+        const next = { ...prev };
+        delete next[seat];
+        return next;
+      });
+    }, duration);
+  }, []);
+
+  /**
+   * Start a new game / round. Deals initial hands.
+   */
+  const startNewRound = useCallback(() => {
+    sound.playShuffle();
+    const fullDeck = generateTileDeck(stateRef.current.settings.includeFlowers);
+    const shuffled = shuffleDeck(fullDeck);
+
+    // Filter out flowers first if auto-drawing replacement flowers
+    const regularTiles: Tile[] = [];
+    const flowersBySeat: { [seat: number]: Tile[] } = { 0: [], 1: [], 2: [], 3: [] };
+
+    // Standard deal: 13 tiles to South, West, North; 14 to Dealer East
+    const hands: Tile[][] = [[], [], [], []];
+    let tileIndex = 0;
+
+    // Deal 13 tiles each (dealer gets 14th)
+    for (let round = 0; round < 3; round++) {
+      for (let s = 0; s < 4; s++) {
+        for (let t = 0; t < 4; t++) {
+          hands[s].push(shuffled[tileIndex++]);
+        }
+      }
+    }
+    // 13th tile
+    for (let s = 0; s < 4; s++) {
+      hands[s].push(shuffled[tileIndex++]);
+    }
+    // 14th tile to dealer (Seat 0 initially)
+    const dealer = stateRef.current.dealerSeat;
+    const initialDrawnTile = shuffled[tileIndex++];
+    hands[dealer].push(initialDrawnTile);
+
+    // Remaining tiles make up the draw wall
+    const wall = shuffled.slice(tileIndex);
+
+    const updatedPlayers = stateRef.current.players.map((p, idx) => ({
+      ...p,
+      hand: hands[idx],
+      melds: [],
+      flowers: flowersBySeat[idx] || [],
+      discards: [],
+    }));
+
+    setGameState(prev => ({
+      ...prev,
+      phase: 'playing',
+      players: updatedPlayers,
+      wall,
+      currentTurn: dealer,
+      lastDiscard: undefined,
+      pendingClaims: {},
+      lastDrawnTile: initialDrawnTile,
+      winResult: undefined,
+    }));
+
+    setAvailableActions([]);
+    addLog(`Round started! Dealer is ${updatedPlayers[dealer].name}.`);
+  }, [addLog]);
+
+  /**
+   * Player or Bot draws a tile from the wall.
+   */
+  const drawTileForSeat = useCallback((seat: number) => {
+    setGameState(prev => {
+      if (prev.wall.length === 0) {
+        // Wall exhausted -> Liu Ju / Draw!
+        return { ...prev, phase: 'round_end' };
+      }
+
+      const nextWall = [...prev.wall];
+      const drawnTile = nextWall.shift()!;
+      sound.playTileClick();
+
+      const nextPlayers = prev.players.map(p => {
+        if (p.seat === seat) {
+          return { ...p, hand: [...p.hand, drawnTile] };
+        }
+        return p;
+      });
+
+      return {
+        ...prev,
+        wall: nextWall,
+        players: nextPlayers,
+        currentTurn: seat,
+        lastDrawnTile: drawnTile,
+        phase: 'playing',
+        pendingClaims: {},
+      };
+    });
+  }, []);
+
+  /**
+   * Discard a tile from the active player's hand.
+   */
+  const discardTile = useCallback((seat: number, tile: Tile) => {
+    sound.playTileDiscard();
+
+    setGameState(prev => {
+      const activePlayer = prev.players[seat];
+      const newHand = activePlayer.hand.filter(t => t.id !== tile.id);
+      const newDiscards = [...activePlayer.discards, tile];
+
+      const nextPlayers = prev.players.map(p => {
+        if (p.seat === seat) {
+          return { ...p, hand: newHand, discards: newDiscards };
+        }
+        return p;
+      });
+
+      return {
+        ...prev,
+        players: nextPlayers,
+        lastDiscard: { tile, seat },
+        phase: 'claim_window',
+        lastDrawnTile: undefined,
+        pendingClaims: {},
+      };
+    });
+
+    addLog(`${stateRef.current.players[seat].name} discarded ${tile.chinese || tile.name}.`);
+  }, [addLog]);
+
+  /**
+   * Check claims on the newly discarded tile for all players.
+   */
+  const processDiscardClaims = useCallback(() => {
+    const state = stateRef.current;
+    if (state.phase !== 'claim_window' || !state.lastDiscard) return;
+
+    const { tile, seat: discardSeat } = state.lastDiscard;
+    const localSeat = localPlayerSeat;
+    const localPlayer = state.players[localSeat];
+
+    // Check actions available for human player if human is NOT the discarder
+    if (localSeat !== discardSeat) {
+      const actions: AvailableAction[] = [];
+
+      // 1. Hu?
+      if (isWinningHand(localPlayer.hand, tile)) {
+        const { qualifies } = calculateFans(
+          localPlayer.hand,
+          localPlayer.melds,
+          tile,
+          false,
+          localSeat,
+          state.prevWind,
+          localPlayer.flowers,
+          state.settings.minFan
+        );
+        if (qualifies) {
+          actions.push({ type: 'hu', tile });
+        }
+      }
+
+      // 2. Gang?
+      if (canExposedGang(localPlayer.hand, tile)) {
+        actions.push({ type: 'gang', tile });
+      }
+
+      // 3. Peng?
+      if (canPeng(localPlayer.hand, tile)) {
+        actions.push({ type: 'peng', tile });
+      }
+
+      // 4. Chi? (Only from player to the left: (localSeat - 1 + 4) % 4 === discardSeat)
+      if ((localSeat - 1 + 4) % 4 === discardSeat) {
+        const chiOptions = getChiOptions(localPlayer.hand, tile);
+        if (chiOptions.length > 0) {
+          actions.push({ type: 'chi', options: chiOptions, tile });
+        }
+      }
+
+      if (actions.length > 0) {
+        setAvailableActions(actions);
+        return; // Wait for human decision
+      }
+    }
+
+    // Bots claims evaluation
+    let highestClaim: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] } | null = null;
+
+    for (const player of state.players) {
+      if (player.seat === discardSeat || !player.isBot) continue;
+
+      const decision = botDecideClaim(
+        player,
+        tile,
+        discardSeat,
+        state.prevWind,
+        state.settings.minFan
+      );
+
+      if (decision.type === 'hu') {
+        highestClaim = { seat: player.seat, type: 'hu' };
+        break; // Hu has ultimate priority
+      } else if (decision.type === 'gang' && (!highestClaim || highestClaim.type === 'chi')) {
+        highestClaim = { seat: player.seat, type: 'gang', tiles: decision.tiles };
+      } else if (decision.type === 'peng' && (!highestClaim || highestClaim.type === 'chi')) {
+        highestClaim = { seat: player.seat, type: 'peng', tiles: decision.tiles };
+      } else if (decision.type === 'chi' && !highestClaim) {
+        highestClaim = { seat: player.seat, type: 'chi', tiles: decision.tiles };
+      }
+    }
+
+    if (highestClaim) {
+      executeClaim(highestClaim.seat, highestClaim.type, highestClaim.tiles);
+    } else {
+      // No claims -> next player draws from wall!
+      const nextSeat = (discardSeat + 1) % 4;
+      setTimeout(() => {
+        drawTileForSeat(nextSeat);
+      }, 500);
+    }
+  }, [localPlayerSeat, drawTileForSeat]);
+
+  /**
+   * Execute a claim (Hu, Gang, Peng, Chi).
+   */
+  const executeClaim = useCallback((
+    claimSeat: number,
+    claimType: 'chi' | 'peng' | 'gang' | 'hu',
+    claimedTiles?: Tile[]
+  ) => {
+    const state = stateRef.current;
+    if (!state.lastDiscard) return;
+    const { tile: discardedTile, seat: fromSeat } = state.lastDiscard;
+
+    setAvailableActions([]);
+    sound.playClaimChime();
+
+    // 1. HU (Win)
+    if (claimType === 'hu') {
+      const winner = state.players[claimSeat];
+      const { fans, totalFan } = calculateFans(
+        winner.hand,
+        winner.melds,
+        discardedTile,
+        false,
+        claimSeat,
+        state.prevWind,
+        winner.flowers,
+        state.settings.minFan
+      );
+
+      // Points calculation (HK rules: payer pays full)
+      const basePoints = Math.pow(2, totalFan) * 10;
+      const scoreDiff: { [seat: number]: number } = { 0: 0, 1: 0, 2: 0, 3: 0 };
+      scoreDiff[claimSeat] = basePoints;
+      scoreDiff[fromSeat] = -basePoints;
+
+      const updatedPlayers = state.players.map(p => ({
+        ...p,
+        score: p.score + (scoreDiff[p.seat] || 0),
+      }));
+
+      const winResult: WinResult = {
+        winnerSeat: claimSeat,
+        fromSeat,
+        isZimo: false,
+        winningTile: discardedTile,
+        fans,
+        totalFan,
+        scoreChange: scoreDiff,
+      };
+
+      setGameState(prev => ({
+        ...prev,
+        phase: 'round_end',
+        players: updatedPlayers,
+        winResult,
+      }));
+
+      addLog(`🀄 HU! ${winner.name} won off ${state.players[fromSeat].name} with ${totalFan} Fan!`);
+      return;
+    }
+
+    // 2. Chi, Peng, or Gang
+    const claimingPlayer = state.players[claimSeat];
+    let meldTiles: Tile[] = [];
+
+    if (claimType === 'peng') {
+      const handMatches = claimingPlayer.hand.filter(t => areTilesEqual(t, discardedTile)).slice(0, 2);
+      meldTiles = [...handMatches, discardedTile];
+      setBotStatus(claimSeat, 'PENG! (碰)');
+    } else if (claimType === 'gang') {
+      const handMatches = claimingPlayer.hand.filter(t => areTilesEqual(t, discardedTile)).slice(0, 3);
+      meldTiles = [...handMatches, discardedTile];
+      setBotStatus(claimSeat, 'KONG! (槓)');
+    } else if (claimType === 'chi' && claimedTiles) {
+      meldTiles = claimedTiles;
+      setBotStatus(claimSeat, 'CHOW! (吃)');
+    }
+
+    // Remove the meld tiles from player's hand (except the claimed tile which came from discard)
+    const tilesToRemove = meldTiles.filter(t => t.id !== discardedTile.id);
+    let remainingHand = [...claimingPlayer.hand];
+    for (const t of tilesToRemove) {
+      const idx = remainingHand.findIndex(h => h.id === t.id);
+      if (idx !== -1) remainingHand.splice(idx, 1);
+    }
+
+    // Remove claimed tile from discard pool of fromSeat
+    const updatedDiscards = state.players[fromSeat].discards.filter(t => t.id !== discardedTile.id);
+
+    const updatedPlayers = state.players.map(p => {
+      if (p.seat === claimSeat) {
+        return {
+          ...p,
+          hand: remainingHand,
+          melds: [...p.melds, { type: claimType, tiles: meldTiles, claimedFrom: fromSeat, claimedTile: discardedTile }],
+        };
+      }
+      if (p.seat === fromSeat) {
+        return { ...p, discards: updatedDiscards };
+      }
+      return p;
+    });
+
+    setGameState(prev => ({
+      ...prev,
+      players: updatedPlayers,
+      currentTurn: claimSeat,
+      phase: 'playing',
+      lastDiscard: undefined,
+      pendingClaims: {},
+    }));
+
+    addLog(`${claimingPlayer.name} declared ${claimType.toUpperCase()}!`);
+
+    // If Gang was declared, draw replacement tile from wall
+    if (claimType === 'gang') {
+      setTimeout(() => {
+        drawTileForSeat(claimSeat);
+      }, 500);
+    }
+  }, [addLog, setBotStatus, drawTileForSeat]);
+
+  /**
+   * Human passes on claiming discard.
+   */
+  const handlePass = useCallback(() => {
+    setAvailableActions([]);
+    const state = stateRef.current;
+    if (state.phase !== 'claim_window' || !state.lastDiscard) return;
+
+    // After human passes, check if any remaining bot claims, otherwise proceed
+    const discardSeat = state.lastDiscard.seat;
+    const nextSeat = (discardSeat + 1) % 4;
+    setTimeout(() => {
+      drawTileForSeat(nextSeat);
+    }, 400);
+  }, [drawTileForSeat]);
+
+  /**
+   * Local player self action (Zimo Hu, An-gang, Bu-gang)
+   */
+  const handleSelfAction = useCallback((action: 'hu' | 'an_gang' | 'bu_gang', tile?: Tile) => {
+    const state = stateRef.current;
+    const player = state.players[localPlayerSeat];
+
+    if (action === 'hu') {
+      const lastTile = state.lastDrawnTile || player.hand[player.hand.length - 1];
+      const handWithoutLast = player.hand.filter(t => t.id !== lastTile.id);
+
+      const { fans, totalFan } = calculateFans(
+        handWithoutLast,
+        player.melds,
+        lastTile,
+        true,
+        localPlayerSeat,
+        state.prevWind,
+        player.flowers,
+        state.settings.minFan
+      );
+
+      // Zimo: All 3 other players pay
+      const basePoints = Math.pow(2, totalFan) * 10;
+      const scoreDiff: { [seat: number]: number } = { 0: 0, 1: 0, 2: 0, 3: 0 };
+      for (let s = 0; s < 4; s++) {
+        if (s === localPlayerSeat) {
+          scoreDiff[s] = basePoints * 3;
+        } else {
+          scoreDiff[s] = -basePoints;
+        }
+      }
+
+      const updatedPlayers = state.players.map(p => ({
+        ...p,
+        score: p.score + (scoreDiff[p.seat] || 0),
+      }));
+
+      const winResult: WinResult = {
+        winnerSeat: localPlayerSeat,
+        isZimo: true,
+        winningTile: lastTile,
+        fans,
+        totalFan,
+        scoreChange: scoreDiff,
+      };
+
+      setGameState(prev => ({
+        ...prev,
+        phase: 'round_end',
+        players: updatedPlayers,
+        winResult,
+      }));
+
+      addLog(`🀄 ZIMO! ${player.name} won by Self-Draw with ${totalFan} Fan!`);
+    } else if (action === 'an_gang' && tile) {
+      // Concealed Gang
+      const matching = player.hand.filter(t => areTilesEqual(t, tile));
+      const remaining = player.hand.filter(t => !areTilesEqual(t, tile));
+      const nextPlayers = state.players.map(p => {
+        if (p.seat === localPlayerSeat) {
+          return {
+            ...p,
+            hand: remaining,
+            melds: [...p.melds, { type: 'an_gang' as const, tiles: matching }],
+          };
+        }
+        return p;
+      });
+
+      setGameState(prev => ({ ...prev, players: nextPlayers }));
+      addLog(`${player.name} declared Concealed Kong (暗槓)!`);
+      drawTileForSeat(localPlayerSeat);
+    }
+  }, [localPlayerSeat, addLog, drawTileForSeat]);
+
+  // Handle active bot turn (Bot draws or discards)
+  useEffect(() => {
+    if (gameState.phase !== 'playing') return;
+
+    const activePlayer = gameState.players[gameState.currentTurn];
+    if (!activePlayer.isBot) return;
+
+    // Bot's turn: think, check self actions, and discard
+    const timer = setTimeout(() => {
+      const state = stateRef.current;
+      const bot = state.players[state.currentTurn];
+      if (!bot.isBot) return;
+
+      // Check bot self action (Zimo)
+      const selfDecision = botDecideSelfAction(bot, state.prevWind, state.settings.minFan);
+      if (selfDecision.type === 'hu') {
+        const lastTile = bot.hand[bot.hand.length - 1];
+        const handWithoutLast = bot.hand.slice(0, -1);
+        const { fans, totalFan } = calculateFans(
+          handWithoutLast,
+          bot.melds,
+          lastTile,
+          true,
+          bot.seat,
+          state.prevWind,
+          bot.flowers,
+          state.settings.minFan
+        );
+
+        const basePoints = Math.pow(2, totalFan) * 10;
+        const scoreDiff: { [seat: number]: number } = { 0: 0, 1: 0, 2: 0, 3: 0 };
+        for (let s = 0; s < 4; s++) {
+          scoreDiff[s] = s === bot.seat ? basePoints * 3 : -basePoints;
+        }
+
+        const updatedPlayers = state.players.map(p => ({
+          ...p,
+          score: p.score + (scoreDiff[p.seat] || 0),
+        }));
+
+        setGameState(prev => ({
+          ...prev,
+          phase: 'round_end',
+          players: updatedPlayers,
+          winResult: {
+            winnerSeat: bot.seat,
+            isZimo: true,
+            winningTile: lastTile,
+            fans,
+            totalFan,
+            scoreChange: scoreDiff,
+          },
+        }));
+
+        addLog(`🀄 ZIMO! ${bot.name} won by Self-Draw!`);
+        return;
+      }
+
+      // Bot discards a tile
+      const discard = botChooseDiscard(bot);
+      discardTile(bot.seat, discard);
+    }, 900);
+
+    return () => clearTimeout(timer);
+  }, [gameState.phase, gameState.currentTurn, gameState.players, discardTile, addLog]);
+
+  // Reset 2-minute timer on every turn change
+  useEffect(() => {
+    if (gameState.phase === 'playing') {
+      setTimeLeft(TURN_TIME_LIMIT);
+    }
+  }, [gameState.currentTurn, gameState.phase]);
+
+  // Turn timer countdown and random discard when 2 minutes expire
+  useEffect(() => {
+    if (gameState.phase !== 'playing') return;
+
+    const timer = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          // Time expired! Auto-discard random tile for current turn player
+          const state = stateRef.current;
+          const activePlayer = state.players[state.currentTurn];
+          if (activePlayer && activePlayer.hand.length % 3 === 2) {
+            const randomIndex = Math.floor(Math.random() * activePlayer.hand.length);
+            const randomTile = activePlayer.hand[randomIndex];
+            addLog(`⏰ Waktu 2 menit habis! ${activePlayer.name} otomatis membuang kartu (${randomTile.chinese || randomTile.name}).`);
+            discardTile(activePlayer.seat, randomTile);
+          }
+          return TURN_TIME_LIMIT;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [gameState.phase, gameState.currentTurn, addLog, discardTile]);
+
+  // Handle claim window transition
+  useEffect(() => {
+    if (gameState.phase === 'claim_window') {
+      const timer = setTimeout(() => {
+        processDiscardClaims();
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [gameState.phase, gameState.lastDiscard, processDiscardClaims]);
+
+  return {
+    gameState,
+    setGameState,
+    localPlayerSeat,
+    setLocalPlayerSeat,
+    availableActions,
+    botStatusMessages,
+    timeLeft,
+    startNewRound,
+    discardTile: (tile: Tile) => discardTile(localPlayerSeat, tile),
+    executeClaim: (type: 'chi' | 'peng' | 'gang' | 'hu', tiles?: Tile[]) => executeClaim(localPlayerSeat, type, tiles),
+    handlePass,
+    handleSelfAction,
+  };
+}
