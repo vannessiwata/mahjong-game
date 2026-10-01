@@ -177,9 +177,9 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
 
         {/* Concealed Hand Tiles */}
         <div className="flex items-end gap-1 sm:gap-1.5 px-1 py-0.5">
-          {sortedHand.map((tile) => (
+          {sortedHand.map((tile, idx) => (
             <Tile
-              key={tile.id}
+              key={`${tile.id}_${idx}`}
               tile={tile}
               selected={selectedTileId === tile.id}
               onClick={() => handleTileClick(tile)}
@@ -194,7 +194,7 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
                 Drawn
               </span>
               <Tile
-                key={drawnTile.id}
+                key={`drawn_${drawnTile.id}`}
                 tile={drawnTile}
                 selected={selectedTileId === drawnTile.id}
                 onClick={() => handleTileClick(drawnTile)}
@@ -209,13 +209,13 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
           <div className="flex items-end gap-2 pl-3 sm:pl-4 border-l border-amber-900/50">
             {player.melds.map((meld, mIdx) => (
               <div
-                key={mIdx}
+                key={`meld_${mIdx}`}
                 className="flex items-end gap-0.5 bg-black/40 p-1 rounded-lg border border-amber-800/40 shadow-inner"
                 title={`${meld.type.toUpperCase()}`}
               >
                 {meld.tiles.map((t, tIdx) => (
                   <Tile
-                    key={tIdx}
+                    key={`meld_${mIdx}_${t.id}_${tIdx}`}
                     tile={t}
                     size="sm"
                     disabled
@@ -232,7 +232,7 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
             <span className="text-[9px] text-amber-400 font-bold">Flowers</span>
             <div className="flex gap-0.5">
               {player.flowers.map((f, fIdx) => (
-                <Tile key={fIdx} tile={f} size="xs" disabled />
+                <Tile key={`flower_${f.id}_${fIdx}`} tile={f} size="xs" disabled />
               ))}
             </div>
           </div>

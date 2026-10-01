@@ -432,16 +432,24 @@ export function getWaitingTiles(hand: Tile[]): Tile[] {
   const testDeck: Tile[] = [];
 
   // Generate 1 of each possible tile to test
+  const WAN_CHINESE = ['一萬', '二萬', '三萬', '四萬', '五萬', '六萬', '七萬', '八萬', '九萬'];
+  const TONG_CHINESE = ['一筒', '二筒', '三筒', '四筒', '五筒', '六筒', '七筒', '八筒', '九筒'];
+  const TIAO_CHINESE = ['一條', '二條', '三條', '四條', '五條', '六條', '七條', '八條', '九條'];
+  const WIND_CHINESE = ['東', '南', '西', '北'];
+  const DRAGON_CHINESE = ['紅中', '發財', '白板'];
+
   for (let v = 1; v <= 9; v++) {
-    testDeck.push({ id: `test_wan_${v}`, suit: 'wan', value: v, name: `${v} Wan`, chinese: '' });
-    testDeck.push({ id: `test_tong_${v}`, suit: 'tong', value: v, name: `${v} Tong`, chinese: '' });
-    testDeck.push({ id: `test_tiao_${v}`, suit: 'tiao', value: v, name: `${v} Tiao`, chinese: '' });
+    testDeck.push({ id: `ting_wan_${v}`, suit: 'wan', value: v, name: `${v} Wan`, chinese: WAN_CHINESE[v - 1] });
+    testDeck.push({ id: `ting_tong_${v}`, suit: 'tong', value: v, name: `${v} Tong`, chinese: TONG_CHINESE[v - 1] });
+    testDeck.push({ id: `ting_tiao_${v}`, suit: 'tiao', value: v, name: `${v} Tiao`, chinese: TIAO_CHINESE[v - 1] });
   }
   for (let v = 1; v <= 4; v++) {
-    testDeck.push({ id: `test_wind_${v}`, suit: 'wind', value: v, name: `Wind ${v}`, chinese: '' });
+    const names = ['East Wind', 'South Wind', 'West Wind', 'North Wind'];
+    testDeck.push({ id: `ting_wind_${v}`, suit: 'wind', value: v, name: names[v - 1], chinese: WIND_CHINESE[v - 1] });
   }
   for (let v = 1; v <= 3; v++) {
-    testDeck.push({ id: `test_dragon_${v}`, suit: 'dragon', value: v, name: `Dragon ${v}`, chinese: '' });
+    const names = ['Red Dragon', 'Green Dragon', 'White Dragon'];
+    testDeck.push({ id: `ting_dragon_${v}`, suit: 'dragon', value: v, name: names[v - 1], chinese: DRAGON_CHINESE[v - 1] });
   }
 
   for (const candidate of testDeck) {

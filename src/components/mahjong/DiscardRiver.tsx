@@ -48,7 +48,7 @@ export const DiscardRiver: React.FC<DiscardRiverProps> = ({
             {discards.map((tile, idx) => {
               const isLatestTile = isCurrentLast && idx === discards.length - 1;
               return (
-                <div key={tile.id || idx} className="relative">
+                <div key={`${tile.id || 'tile'}_${idx}`} className="relative">
                   <Tile
                     tile={tile}
                     size="xs"

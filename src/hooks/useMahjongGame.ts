@@ -7,6 +7,8 @@ import { canPeng, canExposedGang, getChiOptions, isWinningHand, calculateFans, g
 import { botChooseDiscard, botDecideClaim, botDecideSelfAction } from '@/lib/mahjong/bot';
 import { sound } from '@/lib/mahjong/audio';
 
+import { getSocket } from '@/lib/socket';
+
 const INITIAL_PLAYERS: Player[] = [
   { id: 'p0', name: 'You (East)', isBot: false, avatar: '🐉', seat: 0, hand: [], melds: [], flowers: [], discards: [], score: 1000, isReady: true, isHost: true },
   { id: 'p1', name: 'Bot Ling (South)', isBot: true, avatar: '🌸', seat: 1, hand: [], melds: [], flowers: [], discards: [], score: 1000, isReady: true },
@@ -14,9 +16,17 @@ const INITIAL_PLAYERS: Player[] = [
   { id: 'p3', name: 'Bot Ming (North)', isBot: true, avatar: '🐅', seat: 3, hand: [], melds: [], flowers: [], discards: [], score: 1000, isReady: true },
 ];
 
-export function useMahjongGame() {
+export interface UseMahjongGameOptions {
+  roomId?: string | null;
+  playerName?: string;
+}
+
+export function useMahjongGame(options?: UseMahjongGameOptions) {
+  const roomId = options?.roomId || null;
+  const playerName = options?.playerName || 'You';
+
   const [gameState, setGameState] = useState<GameState>({
-    roomId: 'LOCAL_ROOM',
+    roomId: roomId || 'LOCAL_ROOM',
     phase: 'lobby',
     settings: {
       minFan: 3,
@@ -42,6 +52,8 @@ export function useMahjongGame() {
 
   const stateRef = useRef(gameState);
   stateRef.current = gameState;
+  const localSeatRef = useRef(localPlayerSeat);
+  localSeatRef.current = localPlayerSeat;
 
   // Add message to in-game activity feed
   const addLog = useCallback((msg: string) => {
@@ -592,15 +604,206 @@ export function useMahjongGame() {
     return () => clearInterval(timer);
   }, [gameState.phase, gameState.currentTurn, addLog, discardTile]);
 
-  // Handle claim window transition
+  // Handle claim window transition (only local host/dealer or solo triggers claims evaluation)
   useEffect(() => {
     if (gameState.phase === 'claim_window') {
+      // In multiplayer, if not seat 0, let seat 0 (or host) process bot decisions,
+      // but all players check their own local human claim actions!
       const timer = setTimeout(() => {
         processDiscardClaims();
       }, 200);
       return () => clearTimeout(timer);
     }
   }, [gameState.phase, gameState.lastDiscard, processDiscardClaims]);
+
+  // SOCKET.IO MULTIPLAYER INTEGRATION
+  useEffect(() => {
+    if (!roomId) return;
+
+    let socket: any = null;
+    try {
+      socket = getSocket();
+      socket.connect();
+      socket.emit('join_room', { roomId, playerName });
+
+      const handleJoinedRoom = (data: { roomId: string; seat: number; roomPlayers: any[] }) => {
+        console.log('[Multiplayer] Joined room as seat:', data.seat);
+        if (data.seat !== -1) {
+          setLocalPlayerSeat(data.seat);
+          localSeatRef.current = data.seat;
+        }
+      };
+
+      const handleRoomUpdated = (data: { players: any[] }) => {
+        console.log('[Multiplayer] Room updated players:', data.players);
+        setGameState(prev => {
+          const updatedPlayers = prev.players.map((p, idx) => {
+            const serverP = data.players[idx];
+            if (serverP) {
+              return {
+                ...p,
+                name: serverP.name || p.name,
+                isBot: serverP.isBot,
+                id: serverP.id || p.id,
+              };
+            }
+            return p;
+          });
+          return { ...prev, players: updatedPlayers };
+        });
+      };
+
+      const handlePeerAction = (data: { fromSocket: string; actionType: string; payload: any }) => {
+        console.log('[Multiplayer] Peer action:', data.actionType, data.payload);
+        const { actionType, payload } = data;
+
+        if (actionType === 'start_round') {
+          // Sync full round deal from host
+          setGameState(prev => ({
+            ...prev,
+            phase: 'playing',
+            players: payload.players,
+            wall: payload.wall,
+            currentTurn: payload.dealerSeat,
+            dealerSeat: payload.dealerSeat,
+            lastDiscard: undefined,
+            pendingClaims: {},
+            lastDrawnTile: payload.initialDrawnTile,
+            winResult: undefined,
+          }));
+          setAvailableActions([]);
+          addLog(`Multiplayer round started! Dealer is ${payload.players[payload.dealerSeat].name}.`);
+        } else if (actionType === 'discard') {
+          const { seat, tile } = payload;
+          discardTile(seat, tile);
+        } else if (actionType === 'draw') {
+          const { seat } = payload;
+          drawTileForSeat(seat);
+        } else if (actionType === 'claim') {
+          const { seat, claimType, tiles } = payload;
+          executeClaim(seat, claimType, tiles);
+        }
+      };
+
+      socket.on('joined_room', handleJoinedRoom);
+      socket.on('room_updated', handleRoomUpdated);
+      socket.on('peer_game_action', handlePeerAction);
+
+      return () => {
+        socket.off('joined_room', handleJoinedRoom);
+        socket.off('room_updated', handleRoomUpdated);
+        socket.off('peer_game_action', handlePeerAction);
+      };
+    } catch (err) {
+      console.error('Socket setup error:', err);
+    }
+  }, [roomId, playerName, discardTile, drawTileForSeat, executeClaim, addLog]);
+
+  // Wrapped actions that also broadcast to peers when in multiplayer room
+  const handleMultiplayerStartRound = useCallback(() => {
+    sound.playShuffle();
+    const fullDeck = generateTileDeck(stateRef.current.settings.includeFlowers);
+    const shuffled = shuffleDeck(fullDeck);
+
+    const regularTiles: Tile[] = [];
+    const flowersBySeat: { [seat: number]: Tile[] } = { 0: [], 1: [], 2: [], 3: [] };
+
+    const hands: Tile[][] = [[], [], [], []];
+    let tileIndex = 0;
+
+    for (let round = 0; round < 3; round++) {
+      for (let s = 0; s < 4; s++) {
+        for (let t = 0; t < 4; t++) {
+          hands[s].push(shuffled[tileIndex++]);
+        }
+      }
+    }
+    for (let s = 0; s < 4; s++) {
+      hands[s].push(shuffled[tileIndex++]);
+    }
+    const dealer = stateRef.current.dealerSeat;
+    const initialDrawnTile = shuffled[tileIndex++];
+    hands[dealer].push(initialDrawnTile);
+
+    const wall = shuffled.slice(tileIndex);
+
+    const updatedPlayers = stateRef.current.players.map((p, idx) => ({
+      ...p,
+      hand: hands[idx],
+      melds: [],
+      flowers: flowersBySeat[idx] || [],
+      discards: [],
+    }));
+
+    setGameState(prev => ({
+      ...prev,
+      phase: 'playing',
+      players: updatedPlayers,
+      wall,
+      currentTurn: dealer,
+      lastDiscard: undefined,
+      pendingClaims: {},
+      lastDrawnTile: initialDrawnTile,
+      winResult: undefined,
+    }));
+
+    setAvailableActions([]);
+    addLog(`Round started! Dealer is ${updatedPlayers[dealer].name}.`);
+
+    if (roomId) {
+      try {
+        const socket = getSocket();
+        socket.emit('game_action', {
+          roomId,
+          actionType: 'start_round',
+          payload: {
+            players: updatedPlayers,
+            wall,
+            dealerSeat: dealer,
+            initialDrawnTile,
+          },
+        });
+      } catch (e) {
+        console.error('Failed to emit start_round:', e);
+      }
+    }
+  }, [roomId, addLog]);
+
+  const handlePlayerDiscard = useCallback((tile: Tile) => {
+    const seat = localSeatRef.current;
+    discardTile(seat, tile);
+
+    if (roomId) {
+      try {
+        const socket = getSocket();
+        socket.emit('game_action', {
+          roomId,
+          actionType: 'discard',
+          payload: { seat, tile },
+        });
+      } catch (e) {
+        console.error('Failed to emit discard:', e);
+      }
+    }
+  }, [roomId, discardTile]);
+
+  const handlePlayerClaim = useCallback((type: 'chi' | 'peng' | 'gang' | 'hu', tiles?: Tile[]) => {
+    const seat = localSeatRef.current;
+    executeClaim(seat, type, tiles);
+
+    if (roomId) {
+      try {
+        const socket = getSocket();
+        socket.emit('game_action', {
+          roomId,
+          actionType: 'claim',
+          payload: { seat, claimType: type, tiles },
+        });
+      } catch (e) {
+        console.error('Failed to emit claim:', e);
+      }
+    }
+  }, [roomId, executeClaim]);
 
   return {
     gameState,
@@ -610,9 +813,9 @@ export function useMahjongGame() {
     availableActions,
     botStatusMessages,
     timeLeft,
-    startNewRound,
-    discardTile: (tile: Tile) => discardTile(localPlayerSeat, tile),
-    executeClaim: (type: 'chi' | 'peng' | 'gang' | 'hu', tiles?: Tile[]) => executeClaim(localPlayerSeat, type, tiles),
+    startNewRound: roomId ? handleMultiplayerStartRound : startNewRound,
+    discardTile: handlePlayerDiscard,
+    executeClaim: handlePlayerClaim,
     handlePass,
     handleSelfAction,
   };

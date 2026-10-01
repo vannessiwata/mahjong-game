@@ -8,21 +8,17 @@ import { getSocket } from '@/lib/socket';
 export default function Home() {
   const [inGame, setInGame] = useState(false);
   const [multiplayerRoomId, setMultiplayerRoomId] = useState<string | null>(null);
+  const [playerName, setPlayerName] = useState<string>('Player');
 
-  const handleStartSolo = () => {
+  const handleStartSolo = (options: { playerName: string; minFan: number; includeFlowers: boolean }) => {
+    setPlayerName(options.playerName || 'Player');
     setMultiplayerRoomId(null);
     setInGame(true);
   };
 
-  const handleJoinRoom = ({ roomId, playerName }: { roomId: string; playerName: string; minFan: number }) => {
+  const handleJoinRoom = ({ roomId, playerName: name }: { roomId: string; playerName: string; minFan: number }) => {
+    setPlayerName(name || 'Player');
     setMultiplayerRoomId(roomId);
-    try {
-      const socket = getSocket();
-      socket.connect();
-      socket.emit('join_room', { roomId, playerName });
-    } catch {
-      console.warn('Socket server not reachable, fallback to room view');
-    }
     setInGame(true);
   };
 
@@ -35,6 +31,8 @@ export default function Home() {
         />
       ) : (
         <Table
+          roomId={multiplayerRoomId}
+          playerName={playerName}
           onBackToLobby={() => setInGame(false)}
         />
       )}

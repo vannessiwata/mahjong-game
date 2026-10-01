@@ -57,10 +57,13 @@ app.prepare().then(() => {
       const room = getOrCreateRoom(roomId);
       socket.join(roomId);
 
-      // Find an available seat
+      // Find an available seat (first empty seat, or replace an existing bot)
       let assignedSeat = room.players.findIndex((p) => p.id === socket.id);
       if (assignedSeat === -1) {
         assignedSeat = room.players.findIndex((p) => p.id === null);
+      }
+      if (assignedSeat === -1) {
+        assignedSeat = room.players.findIndex((p) => p.isBot);
       }
 
       if (assignedSeat !== -1) {

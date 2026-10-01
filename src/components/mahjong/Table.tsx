@@ -20,10 +20,12 @@ import {
 } from 'lucide-react';
 
 interface TableProps {
+  roomId?: string | null;
+  playerName?: string;
   onBackToLobby?: () => void;
 }
 
-export const Table: React.FC<TableProps> = ({ onBackToLobby }) => {
+export const Table: React.FC<TableProps> = ({ roomId, playerName, onBackToLobby }) => {
   const {
     gameState,
     localPlayerSeat,
@@ -35,7 +37,7 @@ export const Table: React.FC<TableProps> = ({ onBackToLobby }) => {
     executeClaim,
     handlePass,
     handleSelfAction,
-  } = useMahjongGame();
+  } = useMahjongGame({ roomId, playerName });
 
   const [isMuted, setIsMuted] = useState(false);
   const [showRules, setShowRules] = useState(false);
@@ -91,8 +93,15 @@ export const Table: React.FC<TableProps> = ({ onBackToLobby }) => {
               <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-mono border border-amber-500/30">
                 HK Rules
               </span>
+              {roomId && (
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono border border-emerald-500/40">
+                  Room: {roomId}
+                </span>
+              )}
             </h1>
-            <span className="text-[10px] text-slate-400">Min 3 Fan • 4 Players</span>
+            <span className="text-[10px] text-slate-400">
+              {roomId ? `Online Multiplayer • Seat ${['East (東)', 'South (南)', 'West (西)', 'North (北)'][localPlayerSeat]}` : 'Min 3 Fan • 4 Players'}
+            </span>
           </div>
         </div>
 

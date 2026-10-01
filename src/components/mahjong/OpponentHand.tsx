@@ -83,9 +83,9 @@ export const OpponentHand: React.FC<OpponentHandProps> = ({
           {player.melds.length > 0 && (
             <div className="flex gap-1.5 pl-2 border-l border-emerald-700/50">
               {player.melds.map((m, mIdx) => (
-                <div key={mIdx} className="flex gap-0.5 bg-black/30 p-1 rounded">
+                <div key={`meld_top_${mIdx}`} className="flex gap-0.5 bg-black/30 p-1 rounded">
                   {m.tiles.map((t, tIdx) => (
-                    <Tile key={tIdx} tile={t} size="xs" disabled />
+                    <Tile key={`meld_top_${mIdx}_${t.id}_${tIdx}`} tile={t} size="xs" disabled />
                   ))}
                 </div>
               ))}
@@ -96,7 +96,7 @@ export const OpponentHand: React.FC<OpponentHandProps> = ({
           {player.flowers.length > 0 && (
             <div className="flex gap-0.5 pl-2 border-l border-emerald-800/40">
               {player.flowers.map((f, fIdx) => (
-                <Tile key={fIdx} tile={f} size="xs" disabled />
+                <Tile key={`flower_top_${f.id}_${fIdx}`} tile={f} size="xs" disabled />
               ))}
             </div>
           )}
@@ -124,9 +124,9 @@ export const OpponentHand: React.FC<OpponentHandProps> = ({
         {player.melds.length > 0 && (
           <div className="flex flex-col gap-1 pt-1 border-t border-emerald-800/40">
             {player.melds.map((m, mIdx) => (
-              <div key={mIdx} className="flex flex-col gap-0.5 bg-black/30 p-1 rounded">
+              <div key={`meld_side_${mIdx}`} className="flex flex-col gap-0.5 bg-black/30 p-1 rounded">
                 {m.tiles.map((t, tIdx) => (
-                  <Tile key={tIdx} tile={t} size="xs" horizontal disabled />
+                  <Tile key={`meld_side_${mIdx}_${t.id}_${tIdx}`} tile={t} size="xs" horizontal disabled />
                 ))}
               </div>
             ))}
