@@ -1,5 +1,6 @@
 const { createServer } = require('http');
 const { Server } = require('socket.io');
+const { sendRoomCreatedEmail } = require('./email-notifier');
 
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
@@ -41,6 +42,7 @@ io.on('connection', (socket) => {
 
   // Join room
   socket.on('join_room', ({ roomId, playerName }) => {
+    const isNewRoom = !rooms.has(roomId);
     const room = getOrCreateRoom(roomId);
     socket.join(roomId);
 
@@ -74,6 +76,16 @@ io.on('connection', (socket) => {
     });
 
     console.log(`[Room ${roomId}] Player "${playerName}" joined seat ${assignedSeat}`);
+
+    // Trigger email notification to admin when a new room is created
+    if (isNewRoom) {
+      console.log(`[Room ${roomId}] New room created by "${playerName}". Triggering email notification...`);
+      sendRoomCreatedEmail({
+        roomId,
+        creatorName: playerName || `Player ${assignedSeat + 1}`,
+        players: room.players,
+      });
+    }
   });
 
   // Sync game action to other players in same room
