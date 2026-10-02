@@ -22,10 +22,11 @@ import {
 interface TableProps {
   roomId?: string | null;
   playerName?: string;
+  minFan?: number;
   onBackToLobby?: () => void;
 }
 
-export const Table: React.FC<TableProps> = ({ roomId, playerName, onBackToLobby }) => {
+export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, onBackToLobby }) => {
   const {
     gameState,
     localPlayerSeat,
@@ -37,7 +38,7 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, onBackToLobby 
     executeClaim,
     handlePass,
     handleSelfAction,
-  } = useMahjongGame({ roomId, playerName });
+  } = useMahjongGame({ roomId, playerName, minFan });
 
   const [isMuted, setIsMuted] = useState(false);
   const [showRules, setShowRules] = useState(false);

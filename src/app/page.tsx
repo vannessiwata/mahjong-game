@@ -9,15 +9,18 @@ export default function Home() {
   const [inGame, setInGame] = useState(false);
   const [multiplayerRoomId, setMultiplayerRoomId] = useState<string | null>(null);
   const [playerName, setPlayerName] = useState<string>('Player');
+  const [gameMinFan, setGameMinFan] = useState<number>(0);
 
   const handleStartSolo = (options: { playerName: string; minFan: number; includeFlowers: boolean }) => {
     setPlayerName(options.playerName || 'Player');
+    setGameMinFan(options.minFan ?? 0);
     setMultiplayerRoomId(null);
     setInGame(true);
   };
 
-  const handleJoinRoom = ({ roomId, playerName: name }: { roomId: string; playerName: string; minFan: number }) => {
+  const handleJoinRoom = ({ roomId, playerName: name, minFan }: { roomId: string; playerName: string; minFan: number }) => {
     setPlayerName(name || 'Player');
+    setGameMinFan(minFan ?? 0);
     setMultiplayerRoomId(roomId);
     setInGame(true);
   };
@@ -33,6 +36,7 @@ export default function Home() {
         <Table
           roomId={multiplayerRoomId}
           playerName={playerName}
+          minFan={gameMinFan}
           onBackToLobby={() => setInGame(false)}
         />
       )}

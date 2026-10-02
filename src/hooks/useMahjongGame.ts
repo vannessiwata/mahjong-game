@@ -19,17 +19,19 @@ const INITIAL_PLAYERS: Player[] = [
 export interface UseMahjongGameOptions {
   roomId?: string | null;
   playerName?: string;
+  minFan?: number;
 }
 
 export function useMahjongGame(options?: UseMahjongGameOptions) {
   const roomId = options?.roomId || null;
   const playerName = options?.playerName || 'You';
+  const initialMinFan = options?.minFan ?? 0;
 
   const [gameState, setGameState] = useState<GameState>({
     roomId: roomId || 'LOCAL_ROOM',
     phase: 'lobby',
     settings: {
-      minFan: 3,
+      minFan: initialMinFan,
       maxFan: 10,
       includeFlowers: true,
       turnTimeLimit: 0,
@@ -54,6 +56,8 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
   stateRef.current = gameState;
   const localSeatRef = useRef(localPlayerSeat);
   localSeatRef.current = localPlayerSeat;
+  // Track pending draw timers so we can cancel them when a claim is executed
+  const pendingDrawTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Add message to in-game activity feed
   const addLog = useCallback((msg: string) => {
@@ -145,6 +149,14 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
         return { ...prev, phase: 'round_end' };
       }
 
+      // Safety guard: never exceed 14 tiles (13 hand + 1 draw = 14 max)
+      const player = prev.players[seat];
+      const totalTiles = player.hand.length + player.melds.length * 3;
+      if (totalTiles >= 14) {
+        console.warn(`[drawTileForSeat] Skipped: seat ${seat} already has ${totalTiles} tiles.`);
+        return prev;
+      }
+
       const nextWall = [...prev.wall];
       const drawnTile = nextWall.shift()!;
       sound.playTileClick();
@@ -207,6 +219,12 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     claimType: 'chi' | 'peng' | 'gang' | 'hu',
     claimedTiles?: Tile[]
   ) => {
+    // Cancel any pending draw timer — a claim takes priority
+    if (pendingDrawTimerRef.current !== null) {
+      clearTimeout(pendingDrawTimerRef.current);
+      pendingDrawTimerRef.current = null;
+    }
+
     const state = stateRef.current;
     if (!state.lastDiscard) return;
     const { tile: discardedTile, seat: fromSeat } = state.lastDiscard;
@@ -286,19 +304,17 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       setBotStatus(claimSeat, 'CHOW! (吃)');
     }
 
-    // Remove the meld tiles from player's hand (except the claimed tile which came from discard)
-    let discardedFound = false;
-    const tilesToRemove = meldTiles.filter(t => {
-      if (!discardedFound && (t.id === discardedTile.id || areTilesEqual(t, discardedTile))) {
-        discardedFound = true;
-        return false;
-      }
-      return true;
-    });
+    // Remove the meld tiles from player's hand.
+    // The discardedTile came from the discard pile (not from hand), so exclude it by ID only.
+    // Do NOT use areTilesEqual here — it only compares suit+value, not ID, which would
+    // accidentally skip a hand tile that has the same suit+value as the discarded tile.
+    const tilesToRemove = meldTiles.filter(t => t.id !== discardedTile.id);
 
     let remainingHand = [...claimingPlayer.hand];
     for (const t of tilesToRemove) {
+      // First try exact ID match (most reliable)
       let idx = remainingHand.findIndex(h => h.id === t.id);
+      // Fallback: match by suit+value (in case of id mismatch from multiplayer sync)
       if (idx === -1) {
         idx = remainingHand.findIndex(h => areTilesEqual(h, t));
       }
@@ -448,7 +464,11 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     } else {
       // No claims -> next player draws from wall!
       const nextSeat = (discardSeat + 1) % 4;
-      setTimeout(() => {
+      if (pendingDrawTimerRef.current !== null) {
+        clearTimeout(pendingDrawTimerRef.current);
+      }
+      pendingDrawTimerRef.current = setTimeout(() => {
+        pendingDrawTimerRef.current = null;
         drawTileForSeat(nextSeat);
         if (roomId) {
           try {
@@ -474,13 +494,40 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     const state = stateRef.current;
     if (state.phase !== 'claim_window' || !state.lastDiscard) return;
 
-    // After human passes, check if any remaining bot claims, otherwise proceed
-    const discardSeat = state.lastDiscard.seat;
-    const nextSeat = (discardSeat + 1) % 4;
-    setTimeout(() => {
-      drawTileForSeat(nextSeat);
-    }, 400);
-  }, [drawTileForSeat]);
+    const { tile, seat: discardSeat } = state.lastDiscard;
+
+    // After human passes, let bots evaluate claims first
+    let highestClaim: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] } | null = null;
+    for (const player of state.players) {
+      if (player.seat === discardSeat || !player.isBot) continue;
+      const decision = botDecideClaim(player, tile, discardSeat, state.prevWind, state.settings.minFan);
+      if (decision.type === 'hu') {
+        highestClaim = { seat: player.seat, type: 'hu' };
+        break;
+      } else if (decision.type === 'gang' && (!highestClaim || highestClaim.type === 'chi')) {
+        highestClaim = { seat: player.seat, type: 'gang', tiles: decision.tiles };
+      } else if (decision.type === 'peng' && (!highestClaim || highestClaim.type === 'chi')) {
+        highestClaim = { seat: player.seat, type: 'peng', tiles: decision.tiles };
+      } else if (decision.type === 'chi' && !highestClaim) {
+        highestClaim = { seat: player.seat, type: 'chi', tiles: decision.tiles };
+      }
+    }
+
+    if (highestClaim) {
+      // A bot wants to claim — execute immediately (pendingDrawTimerRef already cleared by executeClaim)
+      executeClaim(highestClaim.seat, highestClaim.type, highestClaim.tiles);
+    } else {
+      // No bot claims -> next player draws
+      const nextSeat = (discardSeat + 1) % 4;
+      if (pendingDrawTimerRef.current !== null) {
+        clearTimeout(pendingDrawTimerRef.current);
+      }
+      pendingDrawTimerRef.current = setTimeout(() => {
+        pendingDrawTimerRef.current = null;
+        drawTileForSeat(nextSeat);
+      }, 400);
+    }
+  }, [drawTileForSeat, executeClaim]);
 
   /**
    * Local player self action (Zimo Hu, An-gang, Bu-gang)
@@ -672,9 +719,13 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     return () => clearInterval(timer);
   }, [gameState.phase, gameState.currentTurn, addLog, discardTile]);
 
-  // Handle claim window transition
+  // Handle claim window transition — cancel previous pending draw before scheduling new one
   useEffect(() => {
     if (gameState.phase === 'claim_window') {
+      if (pendingDrawTimerRef.current !== null) {
+        clearTimeout(pendingDrawTimerRef.current);
+        pendingDrawTimerRef.current = null;
+      }
       const timer = setTimeout(() => {
         processDiscardClaims();
       }, 200);

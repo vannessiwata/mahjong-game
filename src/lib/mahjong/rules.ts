@@ -238,6 +238,58 @@ export function isWinningHand(hand: Tile[], additionalTile?: Tile): boolean {
   return checkMeldsAndEye(allTiles);
 }
 
+function canFormAllChows(tiles: Tile[]): boolean {
+  if (tiles.length === 0) return true;
+  const sorted = sortTiles(tiles);
+  const first = sorted[0];
+  if (first.suit !== 'wan' && first.suit !== 'tong' && first.suit !== 'tiao') return false;
+
+  const v = first.value;
+  const s = first.suit;
+  const secondIndex = sorted.findIndex(t => t.suit === s && t.value === v + 1);
+  const thirdIndex = sorted.findIndex(t => t.suit === s && t.value === v + 2);
+
+  if (secondIndex !== -1 && thirdIndex !== -1) {
+    const nextTiles = [...sorted];
+    const indices = [0, secondIndex, thirdIndex].sort((a, b) => b - a);
+    for (const idx of indices) {
+      nextTiles.splice(idx, 1);
+    }
+    return canFormAllChows(nextTiles);
+  }
+  return false;
+}
+
+function checkPingHu(allTiles: Tile[], melds: Meld[]): boolean {
+  // All exposed melds must be 'chi'
+  for (const m of melds) {
+    if (m.type !== 'chi') return false;
+  }
+
+  // Ping Hu eye and runs must be suited (no winds, no dragons, no flowers)
+  for (const t of allTiles) {
+    if (t.suit === 'wind' || t.suit === 'dragon' || t.suit === 'flower') return false;
+  }
+
+  const counts = getTileCounts(allTiles);
+  for (const [key, count] of counts.entries()) {
+    if (count >= 2) {
+      const remaining = [...allTiles];
+      let removed = 0;
+      for (let i = remaining.length - 1; i >= 0 && removed < 2; i--) {
+        if (getTileKey(remaining[i]) === key) {
+          remaining.splice(i, 1);
+          removed++;
+        }
+      }
+      if (canFormAllChows(remaining)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Calculate Hong Kong Mahjong Fan breakdown.
  */
@@ -249,7 +301,7 @@ export function calculateFans(
   playerSeat: number,
   roundWind: string,
   flowers: Tile[],
-  minFan = 3
+  minFan = 0
 ): { fans: WinningFan[]; totalFan: number; qualifies: boolean } {
   const allTiles = [...hand, winningTile];
   const fans: WinningFan[] = [];
@@ -310,6 +362,11 @@ export function calculateFans(
   const isAllTriplets = checkAllTriplets(allTiles, melds);
   if (isAllTriplets) {
     fans.push({ name: 'All Triplets', chinese: '對對胡', fan: 3 });
+  }
+
+  // Ping Hu / All Chows (平胡 - 1 Fan)
+  if (checkPingHu(allTiles, melds)) {
+    fans.push({ name: 'All Chows (Ping Hu)', chinese: '平胡', fan: 1 });
   }
 
   // Dragon Pungs (1 Fan each)

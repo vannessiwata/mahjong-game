@@ -32,7 +32,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onStartSolo, onJoinRoom }) => {
   const [mode, setMode] = useState<'solo' | 'multiplayer'>('solo');
   const [playerName, setPlayerName] = useState('');
   const [roomId, setRoomId] = useState(generateRandomRoomCode());
-  const [minFan, setMinFan] = useState<number>(3);
+  const [minFan, setMinFan] = useState<number>(0);
   const [includeFlowers, setIncludeFlowers] = useState(true);
   const [showRules, setShowRules] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
