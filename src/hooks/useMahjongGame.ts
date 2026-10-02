@@ -272,17 +272,39 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       const handMatches = claimingPlayer.hand.filter(t => areTilesEqual(t, discardedTile)).slice(0, 3);
       meldTiles = [...handMatches, discardedTile];
       setBotStatus(claimSeat, 'KONG! (槓)');
-    } else if (claimType === 'chi' && claimedTiles) {
-      meldTiles = claimedTiles;
+    } else if (claimType === 'chi') {
+      if (claimedTiles && claimedTiles.length === 3) {
+        meldTiles = claimedTiles;
+      } else {
+        const opts = getChiOptions(claimingPlayer.hand, discardedTile);
+        if (opts.length > 0) {
+          meldTiles = [...opts[0], discardedTile];
+        } else if (claimedTiles && claimedTiles.length > 0) {
+          meldTiles = [...claimedTiles, discardedTile];
+        }
+      }
       setBotStatus(claimSeat, 'CHOW! (吃)');
     }
 
     // Remove the meld tiles from player's hand (except the claimed tile which came from discard)
-    const tilesToRemove = meldTiles.filter(t => t.id !== discardedTile.id);
+    let discardedFound = false;
+    const tilesToRemove = meldTiles.filter(t => {
+      if (!discardedFound && (t.id === discardedTile.id || areTilesEqual(t, discardedTile))) {
+        discardedFound = true;
+        return false;
+      }
+      return true;
+    });
+
     let remainingHand = [...claimingPlayer.hand];
     for (const t of tilesToRemove) {
-      const idx = remainingHand.findIndex(h => h.id === t.id);
-      if (idx !== -1) remainingHand.splice(idx, 1);
+      let idx = remainingHand.findIndex(h => h.id === t.id);
+      if (idx === -1) {
+        idx = remainingHand.findIndex(h => areTilesEqual(h, t));
+      }
+      if (idx !== -1) {
+        remainingHand.splice(idx, 1);
+      }
     }
 
     // Remove claimed tile from discard pool of fromSeat
@@ -308,6 +330,7 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       currentTurn: claimSeat,
       phase: 'playing',
       lastDiscard: undefined,
+      lastDrawnTile: undefined,
       pendingClaims: {},
     }));
 

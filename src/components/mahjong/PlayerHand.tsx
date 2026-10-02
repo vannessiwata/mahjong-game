@@ -74,7 +74,7 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
     sound.playTileClick();
     if (selectedTileId === tile.id) {
       // Second click on already selected tile: discard if it's turn!
-      if (isMyTurn && player.hand.length % 3 === 2) {
+      if (isMyTurn) {
         onDiscard(tile);
         setSelectedTileId(null);
       }
@@ -85,7 +85,7 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
 
   const handleDiscardSelected = () => {
     const tile = player.hand.find(t => t.id === selectedTileId);
-    if (tile && isMyTurn && player.hand.length % 3 === 2) {
+    if (tile && isMyTurn) {
       onDiscard(tile);
       setSelectedTileId(null);
     }
@@ -147,7 +147,7 @@ export const PlayerHand: React.FC<PlayerHandProps> = ({
         </button>
 
         {/* Discard Selected Tile button */}
-        {selectedTileId && isMyTurn && player.hand.length % 3 === 2 && (
+        {selectedTileId && isMyTurn && (
           <button
             onClick={handleDiscardSelected}
             className="px-2 sm:px-3 py-1 rounded-lg text-[10px] sm:text-xs font-bold text-white bg-red-600 hover:bg-red-500 shadow-md flex items-center gap-1 animate-pulse"

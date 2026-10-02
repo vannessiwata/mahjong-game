@@ -108,6 +108,8 @@ export const ActionBar: React.FC<ActionBarProps> = ({ actions, onClaim, onPass }
                 setSelectedChiIndex(0);
               } else if (chiAction.options && chiAction.options.length === 1 && chiAction.tile) {
                 onClaim('chi', [...chiAction.options[0], chiAction.tile]);
+              } else if (chiAction.tile) {
+                onClaim('chi', [chiAction.tile]);
               }
             }}
             className="px-5 py-2.5 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-700 to-teal-800 hover:from-emerald-600 hover:to-teal-700 shadow-lg transition-transform active:scale-95 flex items-center gap-2 border border-emerald-400/30"
