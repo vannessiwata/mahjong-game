@@ -602,6 +602,29 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       setGameState(prev => ({ ...prev, players: nextPlayers }));
       addLog(`${player.name} declared Concealed Kong (暗槓)!`);
       drawTileForSeat(localPlayerSeat);
+    } else if (action === 'bu_gang' && tile) {
+      // Added Kong (Bu-gang)
+      const remaining = player.hand.filter(t => !areTilesEqual(t, tile));
+      const nextPlayers = state.players.map(p => {
+        if (p.seat === localPlayerSeat) {
+          const updatedMelds = p.melds.map(m => {
+            if (m.type === 'peng' && areTilesEqual(m.tiles[0], tile)) {
+              return { ...m, type: 'bu_gang' as const, tiles: [...m.tiles, tile] };
+            }
+            return m;
+          });
+          return {
+            ...p,
+            hand: remaining,
+            melds: updatedMelds,
+          };
+        }
+        return p;
+      });
+
+      setGameState(prev => ({ ...prev, players: nextPlayers }));
+      addLog(`${player.name} declared Added Kong (補槓)!`);
+      drawTileForSeat(localPlayerSeat);
     }
   }, [localPlayerSeat, addLog, drawTileForSeat]);
 
