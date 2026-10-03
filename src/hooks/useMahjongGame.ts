@@ -149,11 +149,21 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
         return { ...prev, phase: 'round_end' };
       }
 
-      // Safety guard: never exceed 14 tiles (13 hand + 1 draw = 14 max)
+      // Safety guard: never exceed expected max tiles.
+      // Each Gang meld uses 4 tiles (not 3 like Chi/Peng), so we count precisely.
+      // Expected max before draw = 13 + (number of gang/bu_gang melds)
+      // because each gang "uses" an extra tile, requiring one extra replacement draw.
       const player = prev.players[seat];
-      const totalTiles = player.hand.length + player.melds.length * 3;
-      if (totalTiles >= 14) {
-        console.warn(`[drawTileForSeat] Skipped: seat ${seat} already has ${totalTiles} tiles.`);
+      const gangCount = player.melds.filter(m => m.type === 'gang' || m.type === 'bu_gang' || m.type === 'an_gang').length;
+      const meldTileCount = player.melds.reduce((sum, m) => {
+        const isGang = m.type === 'gang' || m.type === 'bu_gang' || m.type === 'an_gang';
+        return sum + (isGang ? 4 : 3);
+      }, 0);
+      const totalTiles = player.hand.length + meldTileCount;
+      // The "full hand" before draw is 13 + gangCount extra tiles from replacements
+      const maxBeforeDraw = 13 + gangCount;
+      if (totalTiles >= maxBeforeDraw) {
+        console.warn(`[drawTileForSeat] Skipped: seat ${seat} already has ${totalTiles} tiles (max ${maxBeforeDraw}).`);
         return prev;
       }
 
@@ -187,7 +197,17 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     sound.playTileDiscard();
 
     setGameState(prev => {
+      // Guard: only allow discard when it's this seat's turn and phase is playing
+      if (prev.phase !== 'playing' || prev.currentTurn !== seat) {
+        console.warn(`[discardTile] Blocked: phase=${prev.phase}, currentTurn=${prev.currentTurn}, seat=${seat}`);
+        return prev;
+      }
       const activePlayer = prev.players[seat];
+      // Guard: tile must be in player's hand
+      if (!activePlayer.hand.some(t => t.id === tile.id)) {
+        console.warn(`[discardTile] Blocked: tile ${tile.id} not found in seat ${seat}'s hand.`);
+        return prev;
+      }
       const newHand = activePlayer.hand.filter(t => t.id !== tile.id);
       const newDiscards = [...activePlayer.discards, tile];
 

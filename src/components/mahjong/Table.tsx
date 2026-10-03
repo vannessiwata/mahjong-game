@@ -82,6 +82,11 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, onBack
     startNewRound();
   };
 
+  // Wrap discardTile to always pass localPlayerSeat
+  const handleDiscard = (tile: import('@/lib/mahjong/types').Tile) => {
+    discardTile(localPlayerSeat, tile);
+  };
+
   return (
     <div className="relative w-full h-screen bg-slate-950 flex flex-col justify-between overflow-hidden select-none">
       {/* Top Navbar */}
@@ -242,7 +247,7 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, onBack
               roundWind={gameState.prevWind}
               minFan={gameState.settings.minFan}
               timeLeft={timeLeft}
-              onDiscard={discardTile}
+              onDiscard={handleDiscard}
               onSelfAction={handleSelfAction}
             />
           )}
