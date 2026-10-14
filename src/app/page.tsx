@@ -10,10 +10,12 @@ export default function Home() {
   const [multiplayerRoomId, setMultiplayerRoomId] = useState<string | null>(null);
   const [playerName, setPlayerName] = useState<string>('Player');
   const [gameMinFan, setGameMinFan] = useState<number>(0);
+  const [includeFlowers, setIncludeFlowers] = useState(true);
 
   const handleStartSolo = (options: { playerName: string; minFan: number; includeFlowers: boolean }) => {
     setPlayerName(options.playerName || 'Player');
     setGameMinFan(options.minFan ?? 0);
+    setIncludeFlowers(options.includeFlowers);
     setMultiplayerRoomId(null);
     setInGame(true);
   };
@@ -37,6 +39,7 @@ export default function Home() {
           roomId={multiplayerRoomId}
           playerName={playerName}
           minFan={gameMinFan}
+          includeFlowers={includeFlowers}
           onBackToLobby={() => setInGame(false)}
         />
       )}
