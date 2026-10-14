@@ -1,12 +1,19 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { GameState, Player, Tile, WinResult, AvailableAction } from '@/lib/mahjong/types';
-import { generateTileDeck, shuffleDeck, areTilesEqual } from '@/lib/mahjong/tiles';
-import { canPeng, canExposedGang, getChiOptions, isWinningHand, calculateFans, getSelfGangOptions } from '@/lib/mahjong/rules';
-import { botChooseDiscard, botDecideClaim, botDecideSelfAction } from '@/lib/mahjong/bot';
+import { AvailableAction, GameState, Player, Tile } from '@/lib/mahjong/types';
+import { botChooseDiscard, botDecideSelfAction } from '@/lib/mahjong/bot';
 import { sound } from '@/lib/mahjong/audio';
-
+import {
+  applyClaim,
+  applyDiscard,
+  applyDraw,
+  applySelfAction,
+  describeHandProblem,
+  evaluateClaimWindow,
+  needsDiscard,
+  startRound,
+} from '@/lib/mahjong/engine';
 import { getSocket } from '@/lib/socket';
 
 const INITIAL_PLAYERS: Player[] = [
@@ -20,54 +27,79 @@ export interface UseMahjongGameOptions {
   roomId?: string | null;
   playerName?: string;
   minFan?: number;
+  includeFlowers?: boolean;
 }
+
+const CLAIM_LABEL: Record<'chi' | 'peng' | 'gang' | 'hu', string> = {
+  chi: 'CHOW! (吃)',
+  peng: 'PENG! (碰)',
+  gang: 'KONG! (槓)',
+  hu: 'HU! (食糊)',
+};
 
 export function useMahjongGame(options?: UseMahjongGameOptions) {
   const roomId = options?.roomId || null;
   const playerName = options?.playerName || 'You';
   const initialMinFan = options?.minFan ?? 0;
+  const includeFlowers = options?.includeFlowers ?? true;
 
-  const [gameState, setGameState] = useState<GameState>({
-    roomId: roomId || 'LOCAL_ROOM',
-    phase: 'lobby',
-    settings: {
-      minFan: initialMinFan,
-      maxFan: 10,
-      includeFlowers: true,
-      turnTimeLimit: 0,
-    },
-    players: INITIAL_PLAYERS,
-    wall: [],
-    deadWall: [],
-    currentTurn: 0,
-    dealerSeat: 0,
-    prevWind: 'east',
-    pendingClaims: {},
-    log: ['Welcome to Hong Kong Mahjong! Choose Solo vs AI or Online Multiplayer.'],
+  const [gameState, setGameState] = useState<GameState>(() => {
+    const players = INITIAL_PLAYERS.map(player => ({ ...player }));
+    if (!roomId && playerName) players[0] = { ...players[0], name: playerName };
+    return {
+      roomId: roomId || 'LOCAL_ROOM',
+      phase: 'lobby',
+      settings: {
+        minFan: initialMinFan,
+        maxFan: 10,
+        includeFlowers,
+        turnTimeLimit: 0,
+      },
+      players,
+      wall: [],
+      deadWall: [],
+      currentTurn: 0,
+      dealerSeat: 0,
+      prevWind: 'east',
+      pendingClaims: {},
+      log: ['Welcome to Hong Kong Mahjong! Choose Solo vs AI or Online Multiplayer.'],
+    };
   });
 
   const [localPlayerSeat, setLocalPlayerSeat] = useState<number>(0);
   const [availableActions, setAvailableActions] = useState<AvailableAction[]>([]);
   const [botStatusMessages, setBotStatusMessages] = useState<{ [seat: number]: string }>({});
-  const TURN_TIME_LIMIT = 120; // 2 minutes (120 seconds) per turn
+  const TURN_TIME_LIMIT = 120;
   const [timeLeft, setTimeLeft] = useState<number>(TURN_TIME_LIMIT);
 
   const stateRef = useRef(gameState);
-  stateRef.current = gameState;
   const localSeatRef = useRef(localPlayerSeat);
   localSeatRef.current = localPlayerSeat;
-  // Track pending draw timers so we can cancel them when a claim is executed
   const pendingDrawTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Add message to in-game activity feed
-  const addLog = useCallback((msg: string) => {
-    setGameState(prev => ({
-      ...prev,
-      log: [msg, ...prev.log.slice(0, 30)],
-    }));
+  const commit = useCallback((producer: (prev: GameState) => GameState) => {
+    const next = producer(stateRef.current);
+    if (next === stateRef.current) return stateRef.current;
+    stateRef.current = next;
+    setGameState(next);
+    if (process.env.NODE_ENV !== 'production') {
+      const problem = describeHandProblem(next, true);
+      if (problem) console.warn(`[mahjong] ${problem}`);
+    }
+    return next;
   }, []);
 
-  // Set bot temporary action message bubble
+  const clearDrawTimer = useCallback(() => {
+    if (pendingDrawTimerRef.current !== null) {
+      clearTimeout(pendingDrawTimerRef.current);
+      pendingDrawTimerRef.current = null;
+    }
+  }, []);
+
+  const addLog = useCallback((msg: string) => {
+    commit(prev => ({ ...prev, log: [msg, ...prev.log.slice(0, 30)] }));
+  }, [commit]);
+
   const setBotStatus = useCallback((seat: number, text: string, duration = 1200) => {
     setBotStatusMessages(prev => ({ ...prev, [seat]: text }));
     setTimeout(() => {
@@ -79,769 +111,310 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     }, duration);
   }, []);
 
-  /**
-   * Start a new game / round. Deals initial hands.
-   */
+  const emitAction = useCallback((actionType: string, payload: unknown) => {
+    if (!roomId) return;
+    try {
+      getSocket().emit('game_action', { roomId, actionType, payload });
+    } catch (error) {
+      console.error(`Failed to emit ${actionType}:`, error);
+    }
+  }, [roomId]);
+
   const startNewRound = useCallback(() => {
     sound.playShuffle();
-    const fullDeck = generateTileDeck(stateRef.current.settings.includeFlowers);
-    const shuffled = shuffleDeck(fullDeck);
-
-    // Filter out flowers first if auto-drawing replacement flowers
-    const regularTiles: Tile[] = [];
-    const flowersBySeat: { [seat: number]: Tile[] } = { 0: [], 1: [], 2: [], 3: [] };
-
-    // Standard deal: 13 tiles to South, West, North; 14 to Dealer East
-    const hands: Tile[][] = [[], [], [], []];
-    let tileIndex = 0;
-
-    // Deal 13 tiles each (dealer gets 14th)
-    for (let round = 0; round < 3; round++) {
-      for (let s = 0; s < 4; s++) {
-        for (let t = 0; t < 4; t++) {
-          hands[s].push(shuffled[tileIndex++]);
-        }
-      }
-    }
-    // 13th tile
-    for (let s = 0; s < 4; s++) {
-      hands[s].push(shuffled[tileIndex++]);
-    }
-    // 14th tile to dealer (Seat 0 initially)
-    const dealer = stateRef.current.dealerSeat;
-    const initialDrawnTile = shuffled[tileIndex++];
-    hands[dealer].push(initialDrawnTile);
-
-    // Remaining tiles make up the draw wall
-    const wall = shuffled.slice(tileIndex);
-
-    const updatedPlayers = stateRef.current.players.map((p, idx) => ({
-      ...p,
-      hand: hands[idx],
-      melds: [],
-      flowers: flowersBySeat[idx] || [],
-      discards: [],
-    }));
-
-    setGameState(prev => ({
-      ...prev,
-      phase: 'playing',
-      players: updatedPlayers,
-      wall,
-      currentTurn: dealer,
-      lastDiscard: undefined,
-      pendingClaims: {},
-      lastDrawnTile: initialDrawnTile,
-      winResult: undefined,
-    }));
-
+    clearDrawTimer();
+    const next = commit(prev => startRound(prev));
     setAvailableActions([]);
-    addLog(`Round started! Dealer is ${updatedPlayers[dealer].name}.`);
-  }, [addLog]);
-
-  /**
-   * Player or Bot draws a tile from the wall.
-   */
-  const drawTileForSeat = useCallback((seat: number) => {
-    setGameState(prev => {
-      if (prev.wall.length === 0) {
-        // Wall exhausted -> Liu Ju / Draw!
-        return { ...prev, phase: 'round_end' };
-      }
-
-      // Safety guard: never exceed expected max tiles.
-      // Each Gang meld uses 4 tiles (not 3 like Chi/Peng), so we count precisely.
-      // Expected max before draw = 13 + (number of gang/bu_gang melds)
-      // because each gang "uses" an extra tile, requiring one extra replacement draw.
-      const player = prev.players[seat];
-      const gangCount = player.melds.filter(m => m.type === 'gang' || m.type === 'bu_gang' || m.type === 'an_gang').length;
-      const meldTileCount = player.melds.reduce((sum, m) => {
-        const isGang = m.type === 'gang' || m.type === 'bu_gang' || m.type === 'an_gang';
-        return sum + (isGang ? 4 : 3);
-      }, 0);
-      const totalTiles = player.hand.length + meldTileCount;
-      // The "full hand" before draw is 13 + gangCount extra tiles from replacements
-      const maxBeforeDraw = 13 + gangCount;
-      if (totalTiles >= maxBeforeDraw) {
-        console.warn(`[drawTileForSeat] Skipped: seat ${seat} already has ${totalTiles} tiles (max ${maxBeforeDraw}).`);
-        return prev;
-      }
-
-      const nextWall = [...prev.wall];
-      const drawnTile = nextWall.shift()!;
-      sound.playTileClick();
-
-      const nextPlayers = prev.players.map(p => {
-        if (p.seat === seat) {
-          return { ...p, hand: [...p.hand, drawnTile] };
-        }
-        return p;
-      });
-
-      return {
-        ...prev,
-        wall: nextWall,
-        players: nextPlayers,
-        currentTurn: seat,
-        lastDrawnTile: drawnTile,
-        phase: 'playing',
-        pendingClaims: {},
-      };
+    if (!roomId) return;
+    emitAction('start_round', {
+      players: next.players,
+      wall: next.wall,
+      dealerSeat: next.dealerSeat,
+      initialDrawnTile: next.lastDrawnTile,
     });
-  }, []);
+  }, [clearDrawTimer, commit, emitAction, roomId]);
 
-  /**
-   * Discard a tile from the active player's hand.
-   */
-  const discardTile = useCallback((seat: number, tile: Tile) => {
+  const performDiscard = useCallback((seat: number, tile: Tile) => {
+    const prev = stateRef.current;
+    const next = commit(current => applyDiscard(current, seat, tile));
+    if (next === prev) return false;
     sound.playTileDiscard();
+    setAvailableActions([]);
+    return true;
+  }, [commit]);
 
-    setGameState(prev => {
-      // Guard: only allow discard when it's this seat's turn and phase is playing
-      if (prev.phase !== 'playing' || prev.currentTurn !== seat) {
-        console.warn(`[discardTile] Blocked: phase=${prev.phase}, currentTurn=${prev.currentTurn}, seat=${seat}`);
-        return prev;
-      }
-      const activePlayer = prev.players[seat];
-      // Guard: tile must be in player's hand
-      if (!activePlayer.hand.some(t => t.id === tile.id)) {
-        console.warn(`[discardTile] Blocked: tile ${tile.id} not found in seat ${seat}'s hand.`);
-        return prev;
-      }
-      const newHand = activePlayer.hand.filter(t => t.id !== tile.id);
-      const newDiscards = [...activePlayer.discards, tile];
+  const performDraw = useCallback((seat: number) => {
+    const prev = stateRef.current;
+    const next = commit(current => applyDraw(current, seat));
+    if (next === prev) return false;
+    sound.playTileClick();
+    return true;
+  }, [commit]);
 
-      const nextPlayers = prev.players.map(p => {
-        if (p.seat === seat) {
-          return { ...p, hand: newHand, discards: newDiscards };
-        }
-        return p;
-      });
-
-      return {
-        ...prev,
-        players: nextPlayers,
-        lastDiscard: { tile, seat },
-        phase: 'claim_window',
-        lastDrawnTile: undefined,
-        pendingClaims: {},
-      };
-    });
-
-    addLog(`${stateRef.current.players[seat].name} discarded ${tile.chinese || tile.name}.`);
-  }, [addLog]);
-
-  /**
-   * Execute a claim (Hu, Gang, Peng, Chi).
-   */
-  const executeClaim = useCallback((
-    claimSeat: number,
+  const performClaim = useCallback((
+    seat: number,
     claimType: 'chi' | 'peng' | 'gang' | 'hu',
-    claimedTiles?: Tile[]
+    tiles?: Tile[],
   ) => {
-    // Cancel any pending draw timer — a claim takes priority
-    if (pendingDrawTimerRef.current !== null) {
-      clearTimeout(pendingDrawTimerRef.current);
-      pendingDrawTimerRef.current = null;
-    }
-
-    const state = stateRef.current;
-    if (!state.lastDiscard) return;
-    const { tile: discardedTile, seat: fromSeat } = state.lastDiscard;
-
+    clearDrawTimer();
+    const prev = stateRef.current;
+    const next = commit(current => applyClaim(current, seat, claimType, tiles));
+    if (next === prev) return false;
     setAvailableActions([]);
     sound.playClaimChime();
+    if (next.players[seat]?.isBot) setBotStatus(seat, CLAIM_LABEL[claimType]);
+    return true;
+  }, [clearDrawTimer, commit, setBotStatus]);
 
-    // 1. HU (Win)
-    if (claimType === 'hu') {
-      const winner = state.players[claimSeat];
-      const { fans, totalFan } = calculateFans(
-        winner.hand,
-        winner.melds,
-        discardedTile,
-        false,
-        claimSeat,
-        state.prevWind,
-        winner.flowers,
-        state.settings.minFan
-      );
+  const scheduleDraw = useCallback((seat: number, delay: number) => {
+    clearDrawTimer();
+    pendingDrawTimerRef.current = setTimeout(() => {
+      pendingDrawTimerRef.current = null;
+      if (!performDraw(seat)) return;
+      emitAction('draw', { seat });
+    }, delay);
+  }, [clearDrawTimer, emitAction, performDraw]);
 
-      // Points calculation (HK rules: payer pays full)
-      const basePoints = Math.pow(2, totalFan) * 10;
-      const scoreDiff: { [seat: number]: number } = { 0: 0, 1: 0, 2: 0, 3: 0 };
-      scoreDiff[claimSeat] = basePoints;
-      scoreDiff[fromSeat] = -basePoints;
+  const resolveClaimWindow = useCallback((ignoreHuman: boolean) => {
+    const state = stateRef.current;
+    if (state.phase !== 'claim_window' || !state.lastDiscard) return;
+    const isHost = localSeatRef.current === 0;
+    if (roomId && !isHost) return;
 
-      const updatedPlayers = state.players.map(p => ({
-        ...p,
-        score: p.score + (scoreDiff[p.seat] || 0),
-      }));
-
-      const winResult: WinResult = {
-        winnerSeat: claimSeat,
-        fromSeat,
-        isZimo: false,
-        winningTile: discardedTile,
-        fans,
-        totalFan,
-        scoreChange: scoreDiff,
-      };
-
-      setGameState(prev => ({
-        ...prev,
-        phase: 'round_end',
-        players: updatedPlayers,
-        winResult,
-      }));
-
-      addLog(`🀄 HU! ${winner.name} won off ${state.players[fromSeat].name} with ${totalFan} Fan!`);
+    const { autoClaim } = evaluateClaimWindow(state, localSeatRef.current, { ignoreHuman });
+    if (autoClaim) {
+      const applied = performClaim(autoClaim.seat, autoClaim.type, autoClaim.tiles);
+      if (applied) {
+        emitAction('claim', {
+          seat: autoClaim.seat,
+          claimType: autoClaim.type,
+          tiles: autoClaim.tiles,
+        });
+      }
       return;
     }
 
-    // 2. Chi, Peng, or Gang
-    const claimingPlayer = state.players[claimSeat];
-    let meldTiles: Tile[] = [];
+    scheduleDraw((state.lastDiscard.seat + 1) % 4, ignoreHuman ? 400 : 500);
+  }, [emitAction, performClaim, roomId, scheduleDraw]);
 
-    if (claimType === 'peng') {
-      const handMatches = claimingPlayer.hand.filter(t => areTilesEqual(t, discardedTile)).slice(0, 2);
-      meldTiles = [...handMatches, discardedTile];
-      setBotStatus(claimSeat, 'PENG! (碰)');
-    } else if (claimType === 'gang') {
-      const handMatches = claimingPlayer.hand.filter(t => areTilesEqual(t, discardedTile)).slice(0, 3);
-      meldTiles = [...handMatches, discardedTile];
-      setBotStatus(claimSeat, 'KONG! (槓)');
-    } else if (claimType === 'chi') {
-      if (claimedTiles && claimedTiles.length === 3) {
-        meldTiles = claimedTiles;
-      } else {
-        const opts = getChiOptions(claimingPlayer.hand, discardedTile);
-        if (opts.length > 0) {
-          meldTiles = [...opts[0], discardedTile];
-        } else if (claimedTiles && claimedTiles.length > 0) {
-          meldTiles = [...claimedTiles, discardedTile];
-        }
-      }
-      setBotStatus(claimSeat, 'CHOW! (吃)');
-    }
-
-    // Remove the meld tiles from player's hand.
-    // The discardedTile came from the discard pile (not from hand), so exclude it by ID only.
-    // Do NOT use areTilesEqual here — it only compares suit+value, not ID, which would
-    // accidentally skip a hand tile that has the same suit+value as the discarded tile.
-    const tilesToRemove = meldTiles.filter(t => t.id !== discardedTile.id);
-
-    let remainingHand = [...claimingPlayer.hand];
-    for (const t of tilesToRemove) {
-      // First try exact ID match (most reliable)
-      let idx = remainingHand.findIndex(h => h.id === t.id);
-      // Fallback: match by suit+value (in case of id mismatch from multiplayer sync)
-      if (idx === -1) {
-        idx = remainingHand.findIndex(h => areTilesEqual(h, t));
-      }
-      if (idx !== -1) {
-        remainingHand.splice(idx, 1);
-      }
-    }
-
-    // Remove claimed tile from discard pool of fromSeat
-    const updatedDiscards = state.players[fromSeat].discards.filter(t => t.id !== discardedTile.id);
-
-    const updatedPlayers = state.players.map(p => {
-      if (p.seat === claimSeat) {
-        return {
-          ...p,
-          hand: remainingHand,
-          melds: [...p.melds, { type: claimType, tiles: meldTiles, claimedFrom: fromSeat, claimedTile: discardedTile }],
-        };
-      }
-      if (p.seat === fromSeat) {
-        return { ...p, discards: updatedDiscards };
-      }
-      return p;
-    });
-
-    setGameState(prev => ({
-      ...prev,
-      players: updatedPlayers,
-      currentTurn: claimSeat,
-      phase: 'playing',
-      lastDiscard: undefined,
-      lastDrawnTile: undefined,
-      pendingClaims: {},
-    }));
-
-    addLog(`${claimingPlayer.name} declared ${claimType.toUpperCase()}!`);
-
-    // If Gang was declared, draw replacement tile from wall
-    if (claimType === 'gang') {
-      setTimeout(() => {
-        drawTileForSeat(claimSeat);
-      }, 500);
-    }
-  }, [addLog, setBotStatus, drawTileForSeat]);
-
-  /**
-   * Check claims on the newly discarded tile for all players.
-   */
   const processDiscardClaims = useCallback(() => {
     const state = stateRef.current;
     if (state.phase !== 'claim_window' || !state.lastDiscard) return;
 
-    const { tile, seat: discardSeat } = state.lastDiscard;
-    const localSeat = localPlayerSeat;
-    const localPlayer = state.players[localSeat];
-    const isHost = localSeat === 0;
-
-    // Check actions available for human player if human is NOT the discarder
-    if (localSeat !== discardSeat) {
-      const actions: AvailableAction[] = [];
-
-      // 1. Hu?
-      if (isWinningHand(localPlayer.hand, tile)) {
-        const { qualifies } = calculateFans(
-          localPlayer.hand,
-          localPlayer.melds,
-          tile,
-          false,
-          localSeat,
-          state.prevWind,
-          localPlayer.flowers,
-          state.settings.minFan
-        );
-        if (qualifies) {
-          actions.push({ type: 'hu', tile });
-        }
-      }
-
-      // 2. Gang?
-      if (canExposedGang(localPlayer.hand, tile)) {
-        actions.push({ type: 'gang', tile });
-      }
-
-      // 3. Peng?
-      if (canPeng(localPlayer.hand, tile)) {
-        actions.push({ type: 'peng', tile });
-      }
-
-      // 4. Chi? (Only from player to the left: (localSeat - 1 + 4) % 4 === discardSeat)
-      if ((localSeat - 1 + 4) % 4 === discardSeat) {
-        const chiOptions = getChiOptions(localPlayer.hand, tile);
-        if (chiOptions.length > 0) {
-          actions.push({ type: 'chi', options: chiOptions, tile });
-        }
-      }
-
-      if (actions.length > 0) {
-        setAvailableActions(actions);
-        return; // Wait for human decision
-      }
+    // One evaluation: bot choices use Math.random, so a second pass could disagree.
+    const { humanActions, autoClaim } = evaluateClaimWindow(state, localSeatRef.current);
+    if (humanActions.length > 0) {
+      setAvailableActions(humanActions);
+      return;
     }
 
-    // In multiplayer mode, only HOST (seat 0) evaluates bots and triggers next draw.
-    // Non-host players wait for peer_game_action events to update their state.
-    if (roomId && !isHost) return;
-
-    // Bots claims evaluation
-    let highestClaim: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] } | null = null;
-
-    for (const player of state.players) {
-      if (player.seat === discardSeat || !player.isBot) continue;
-
-      const decision = botDecideClaim(
-        player,
-        tile,
-        discardSeat,
-        state.prevWind,
-        state.settings.minFan
-      );
-
-      if (decision.type === 'hu') {
-        highestClaim = { seat: player.seat, type: 'hu' };
-        break; // Hu has ultimate priority
-      } else if (decision.type === 'gang' && (!highestClaim || highestClaim.type === 'chi')) {
-        highestClaim = { seat: player.seat, type: 'gang', tiles: decision.tiles };
-      } else if (decision.type === 'peng' && (!highestClaim || highestClaim.type === 'chi')) {
-        highestClaim = { seat: player.seat, type: 'peng', tiles: decision.tiles };
-      } else if (decision.type === 'chi' && !highestClaim) {
-        highestClaim = { seat: player.seat, type: 'chi', tiles: decision.tiles };
+    setAvailableActions([]);
+    if (roomId && localSeatRef.current !== 0) return;
+    if (autoClaim) {
+      const applied = performClaim(autoClaim.seat, autoClaim.type, autoClaim.tiles);
+      if (applied) {
+        emitAction('claim', {
+          seat: autoClaim.seat,
+          claimType: autoClaim.type,
+          tiles: autoClaim.tiles,
+        });
       }
+      return;
     }
+    scheduleDraw((state.lastDiscard.seat + 1) % 4, 500);
+  }, [emitAction, performClaim, roomId, scheduleDraw]);
 
-    if (highestClaim) {
-      executeClaim(highestClaim.seat, highestClaim.type, highestClaim.tiles);
-      if (roomId) {
-        try {
-          const socket = getSocket();
-          socket.emit('game_action', {
-            roomId,
-            actionType: 'claim',
-            payload: { seat: highestClaim.seat, claimType: highestClaim.type, tiles: highestClaim.tiles },
-          });
-        } catch (e) {
-          console.error('Failed to emit claim:', e);
-        }
-      }
-    } else {
-      // No claims -> next player draws from wall!
-      const nextSeat = (discardSeat + 1) % 4;
-      if (pendingDrawTimerRef.current !== null) {
-        clearTimeout(pendingDrawTimerRef.current);
-      }
-      pendingDrawTimerRef.current = setTimeout(() => {
-        pendingDrawTimerRef.current = null;
-        drawTileForSeat(nextSeat);
-        if (roomId) {
-          try {
-            const socket = getSocket();
-            socket.emit('game_action', {
-              roomId,
-              actionType: 'draw',
-              payload: { seat: nextSeat },
-            });
-          } catch (e) {
-            console.error('Failed to emit draw:', e);
-          }
-        }
-      }, 500);
-    }
-  }, [localPlayerSeat, drawTileForSeat, roomId, executeClaim]);
-
-  /**
-   * Human passes on claiming discard.
-   */
   const handlePass = useCallback(() => {
     setAvailableActions([]);
     const state = stateRef.current;
     if (state.phase !== 'claim_window' || !state.lastDiscard) return;
+    // Remote seats only clear their prompt. The host resolves bots and the draw,
+    // otherwise two clients would each pull a tile.
+    if (roomId && localSeatRef.current !== 0) return;
+    resolveClaimWindow(true);
+  }, [resolveClaimWindow, roomId]);
 
-    const { tile, seat: discardSeat } = state.lastDiscard;
-
-    // After human passes, let bots evaluate claims first
-    let highestClaim: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] } | null = null;
-    for (const player of state.players) {
-      if (player.seat === discardSeat || !player.isBot) continue;
-      const decision = botDecideClaim(player, tile, discardSeat, state.prevWind, state.settings.minFan);
-      if (decision.type === 'hu') {
-        highestClaim = { seat: player.seat, type: 'hu' };
-        break;
-      } else if (decision.type === 'gang' && (!highestClaim || highestClaim.type === 'chi')) {
-        highestClaim = { seat: player.seat, type: 'gang', tiles: decision.tiles };
-      } else if (decision.type === 'peng' && (!highestClaim || highestClaim.type === 'chi')) {
-        highestClaim = { seat: player.seat, type: 'peng', tiles: decision.tiles };
-      } else if (decision.type === 'chi' && !highestClaim) {
-        highestClaim = { seat: player.seat, type: 'chi', tiles: decision.tiles };
-      }
-    }
-
-    if (highestClaim) {
-      // A bot wants to claim — execute immediately (pendingDrawTimerRef already cleared by executeClaim)
-      executeClaim(highestClaim.seat, highestClaim.type, highestClaim.tiles);
-    } else {
-      // No bot claims -> next player draws
-      const nextSeat = (discardSeat + 1) % 4;
-      if (pendingDrawTimerRef.current !== null) {
-        clearTimeout(pendingDrawTimerRef.current);
-      }
-      pendingDrawTimerRef.current = setTimeout(() => {
-        pendingDrawTimerRef.current = null;
-        drawTileForSeat(nextSeat);
-      }, 400);
-    }
-  }, [drawTileForSeat, executeClaim]);
-
-  /**
-   * Local player self action (Zimo Hu, An-gang, Bu-gang)
-   */
   const handleSelfAction = useCallback((action: 'hu' | 'an_gang' | 'bu_gang', tile?: Tile) => {
-    const state = stateRef.current;
-    const player = state.players[localPlayerSeat];
+    const seat = localSeatRef.current;
+    const prev = stateRef.current;
+    const next = commit(current => applySelfAction(current, seat, action, tile));
+    if (next === prev) return;
+    if (action !== 'hu') sound.playTileClick();
+    emitAction('self_action', { seat, action, tile });
+  }, [commit, emitAction]);
 
-    if (action === 'hu') {
-      const lastTile = state.lastDrawnTile || player.hand[player.hand.length - 1];
-      const handWithoutLast = player.hand.filter(t => t.id !== lastTile.id);
+  const handlePlayerDiscard = useCallback((tile: Tile) => {
+    const seat = localSeatRef.current;
+    if (!performDiscard(seat, tile)) return;
+    emitAction('discard', { seat, tile });
+  }, [emitAction, performDiscard]);
 
-      const { fans, totalFan } = calculateFans(
-        handWithoutLast,
-        player.melds,
-        lastTile,
-        true,
-        localPlayerSeat,
-        state.prevWind,
-        player.flowers,
-        state.settings.minFan
-      );
+  const handlePlayerClaim = useCallback((type: 'chi' | 'peng' | 'gang' | 'hu', tiles?: Tile[]) => {
+    const seat = localSeatRef.current;
+    if (!performClaim(seat, type, tiles)) return;
+    emitAction('claim', { seat, claimType: type, tiles });
+  }, [emitAction, performClaim]);
 
-      // Zimo: All 3 other players pay
-      const basePoints = Math.pow(2, totalFan) * 10;
-      const scoreDiff: { [seat: number]: number } = { 0: 0, 1: 0, 2: 0, 3: 0 };
-      for (let s = 0; s < 4; s++) {
-        if (s === localPlayerSeat) {
-          scoreDiff[s] = basePoints * 3;
-        } else {
-          scoreDiff[s] = -basePoints;
-        }
-      }
-
-      const updatedPlayers = state.players.map(p => ({
-        ...p,
-        score: p.score + (scoreDiff[p.seat] || 0),
-      }));
-
-      const winResult: WinResult = {
-        winnerSeat: localPlayerSeat,
-        isZimo: true,
-        winningTile: lastTile,
-        fans,
-        totalFan,
-        scoreChange: scoreDiff,
-      };
-
-      setGameState(prev => ({
-        ...prev,
-        phase: 'round_end',
-        players: updatedPlayers,
-        winResult,
-      }));
-
-      addLog(`🀄 ZIMO! ${player.name} won by Self-Draw with ${totalFan} Fan!`);
-    } else if (action === 'an_gang' && tile) {
-      // Concealed Gang
-      const matching = player.hand.filter(t => areTilesEqual(t, tile));
-      const remaining = player.hand.filter(t => !areTilesEqual(t, tile));
-      const nextPlayers = state.players.map(p => {
-        if (p.seat === localPlayerSeat) {
-          return {
-            ...p,
-            hand: remaining,
-            melds: [...p.melds, { type: 'an_gang' as const, tiles: matching }],
-          };
-        }
-        return p;
-      });
-
-      setGameState(prev => ({ ...prev, players: nextPlayers }));
-      addLog(`${player.name} declared Concealed Kong (暗槓)!`);
-      drawTileForSeat(localPlayerSeat);
-    } else if (action === 'bu_gang' && tile) {
-      // Added Kong (Bu-gang)
-      const remaining = player.hand.filter(t => !areTilesEqual(t, tile));
-      const nextPlayers = state.players.map(p => {
-        if (p.seat === localPlayerSeat) {
-          const updatedMelds = p.melds.map(m => {
-            if (m.type === 'peng' && areTilesEqual(m.tiles[0], tile)) {
-              return { ...m, type: 'bu_gang' as const, tiles: [...m.tiles, tile] };
-            }
-            return m;
-          });
-          return {
-            ...p,
-            hand: remaining,
-            melds: updatedMelds,
-          };
-        }
-        return p;
-      });
-
-      setGameState(prev => ({ ...prev, players: nextPlayers }));
-      addLog(`${player.name} declared Added Kong (補槓)!`);
-      drawTileForSeat(localPlayerSeat);
-    }
-  }, [localPlayerSeat, addLog, drawTileForSeat]);
-
-  // Handle active bot turn (Bot draws or discards)
-  // In multiplayer room, ONLY host (seat 0) simulates bot moves to prevent dual simulation!
   useEffect(() => {
     if (gameState.phase !== 'playing') return;
-
     if (roomId && localSeatRef.current !== 0) return;
 
     const activePlayer = gameState.players[gameState.currentTurn];
-    if (!activePlayer.isBot) return;
+    if (!activePlayer?.isBot || !needsDiscard(activePlayer)) return;
 
-    // Bot's turn: think, check self actions, and discard
     const timer = setTimeout(() => {
       const state = stateRef.current;
+      if (state.phase !== 'playing') return;
       const bot = state.players[state.currentTurn];
-      if (!bot.isBot) return;
+      if (!bot?.isBot || !needsDiscard(bot)) return;
 
-      // Check bot self action (Zimo)
-      const selfDecision = botDecideSelfAction(bot, state.prevWind, state.settings.minFan);
-      if (selfDecision.type === 'hu') {
-        const lastTile = bot.hand[bot.hand.length - 1];
-        const handWithoutLast = bot.hand.slice(0, -1);
-        const { fans, totalFan } = calculateFans(
-          handWithoutLast,
-          bot.melds,
-          lastTile,
-          true,
-          bot.seat,
-          state.prevWind,
-          bot.flowers,
-          state.settings.minFan
-        );
-
-        const basePoints = Math.pow(2, totalFan) * 10;
-        const scoreDiff: { [seat: number]: number } = { 0: 0, 1: 0, 2: 0, 3: 0 };
-        for (let s = 0; s < 4; s++) {
-          scoreDiff[s] = s === bot.seat ? basePoints * 3 : -basePoints;
+      const decision = botDecideSelfAction(bot, state.prevWind, state.settings.minFan);
+      if (decision.type === 'hu' || decision.type === 'an_gang' || decision.type === 'bu_gang') {
+        const action = decision.type;
+        const tile = decision.tile;
+        const next = commit(current => applySelfAction(current, bot.seat, action, tile));
+        if (next !== state) {
+          if (action !== 'hu') sound.playTileClick();
+          emitAction('self_action', { seat: bot.seat, action, tile });
+          return;
         }
-
-        const updatedPlayers = state.players.map(p => ({
-          ...p,
-          score: p.score + (scoreDiff[p.seat] || 0),
-        }));
-
-        setGameState(prev => ({
-          ...prev,
-          phase: 'round_end',
-          players: updatedPlayers,
-          winResult: {
-            winnerSeat: bot.seat,
-            isZimo: true,
-            winningTile: lastTile,
-            fans,
-            totalFan,
-            scoreChange: scoreDiff,
-          },
-        }));
-
-        addLog(`🀄 ZIMO! ${bot.name} won by Self-Draw!`);
-        return;
       }
 
-      // Bot discards a tile
       const discard = botChooseDiscard(bot);
-      discardTile(bot.seat, discard);
-
-      if (roomId) {
-        try {
-          const socket = getSocket();
-          socket.emit('game_action', {
-            roomId,
-            actionType: 'discard',
-            payload: { seat: bot.seat, tile: discard },
-          });
-        } catch (e) {
-          console.error('Failed to emit bot discard:', e);
-        }
-      }
+      if (!performDiscard(bot.seat, discard)) return;
+      emitAction('discard', { seat: bot.seat, tile: discard });
     }, 900);
 
     return () => clearTimeout(timer);
-  }, [gameState.phase, gameState.currentTurn, gameState.players, discardTile, addLog, roomId]);
+  }, [gameState.phase, gameState.currentTurn, gameState.players, commit, emitAction, performDiscard, roomId]);
 
-  // Reset 2-minute timer on every turn change
   useEffect(() => {
-    if (gameState.phase === 'playing') {
-      setTimeLeft(TURN_TIME_LIMIT);
-    }
+    if (gameState.phase === 'playing') setTimeLeft(TURN_TIME_LIMIT);
   }, [gameState.currentTurn, gameState.phase]);
 
-  // Turn timer countdown and random discard when 2 minutes expire
+  const timeLeftRef = useRef(timeLeft);
+  timeLeftRef.current = timeLeft;
+
   useEffect(() => {
     if (gameState.phase !== 'playing') return;
 
     const timer = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          // Time expired! Auto-discard random tile for current turn player
-          const state = stateRef.current;
-          const activePlayer = state.players[state.currentTurn];
-          if (activePlayer && activePlayer.hand.length % 3 === 2) {
-            const randomIndex = Math.floor(Math.random() * activePlayer.hand.length);
-            const randomTile = activePlayer.hand[randomIndex];
-            addLog(`⏰ Waktu 2 menit habis! ${activePlayer.name} otomatis membuang kartu (${randomTile.chinese || randomTile.name}).`);
-            discardTile(activePlayer.seat, randomTile);
-          }
-          return TURN_TIME_LIMIT;
-        }
-        return prev - 1;
+      if (timeLeftRef.current > 1) {
+        setTimeLeft(current => current - 1);
+        return;
+      }
+
+      setTimeLeft(TURN_TIME_LIMIT);
+      if (roomId && localSeatRef.current !== 0) return;
+
+      const state = stateRef.current;
+      const activePlayer = state.players[state.currentTurn];
+      if (!activePlayer || !needsDiscard(activePlayer) || activePlayer.hand.length === 0) return;
+
+      const randomTile = activePlayer.hand[Math.floor(Math.random() * activePlayer.hand.length)];
+      const next = commit(current => {
+        const discarded = applyDiscard(current, activePlayer.seat, randomTile);
+        if (discarded === current) return current;
+        return {
+          ...discarded,
+          log: [
+            `⏰ Waktu 2 menit habis! ${activePlayer.name} otomatis membuang kartu (${randomTile.chinese || randomTile.name}).`,
+            ...discarded.log.slice(0, 30),
+          ],
+        };
       });
+      if (next === state) return;
+      sound.playTileDiscard();
+      setAvailableActions([]);
+      emitAction('discard', { seat: activePlayer.seat, tile: randomTile });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [gameState.phase, gameState.currentTurn, addLog, discardTile]);
+  }, [gameState.phase, gameState.currentTurn, commit, emitAction, roomId]);
 
-  // Handle claim window transition — cancel previous pending draw before scheduling new one
   useEffect(() => {
-    if (gameState.phase === 'claim_window') {
-      if (pendingDrawTimerRef.current !== null) {
-        clearTimeout(pendingDrawTimerRef.current);
-        pendingDrawTimerRef.current = null;
-      }
-      const timer = setTimeout(() => {
-        processDiscardClaims();
-      }, 200);
-      return () => clearTimeout(timer);
-    }
-  }, [gameState.phase, gameState.lastDiscard, processDiscardClaims]);
+    if (gameState.phase !== 'claim_window') return;
+    clearDrawTimer();
+    const timer = setTimeout(() => {
+      processDiscardClaims();
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [gameState.phase, gameState.lastDiscard, processDiscardClaims, clearDrawTimer]);
 
-  // SOCKET.IO MULTIPLAYER INTEGRATION
   useEffect(() => {
     if (!roomId) return;
 
-    let socket: any = null;
+    let socket: ReturnType<typeof getSocket> | null = null;
     try {
       socket = getSocket();
       socket.connect();
       socket.emit('join_room', { roomId, playerName });
 
-      const handleJoinedRoom = (data: { roomId: string; seat: number; roomPlayers: any[] }) => {
-        console.log('[Multiplayer] Joined room as seat:', data.seat);
+      const handleJoinedRoom = (data: { roomId: string; seat: number; roomPlayers: { name?: string; isBot?: boolean; id?: string }[] }) => {
         if (data.seat !== -1) {
           setLocalPlayerSeat(data.seat);
           localSeatRef.current = data.seat;
         }
       };
 
-      const handleRoomUpdated = (data: { players: any[] }) => {
-        console.log('[Multiplayer] Room updated players:', data.players);
-        setGameState(prev => {
-          const updatedPlayers = prev.players.map((p, idx) => {
-            const serverP = data.players[idx];
-            if (serverP) {
-              return {
-                ...p,
-                name: serverP.name || p.name,
-                isBot: serverP.isBot,
-                id: serverP.id || p.id,
-              };
-            }
-            return p;
-          });
-          return { ...prev, players: updatedPlayers };
-        });
+      const handleRoomUpdated = (data: { players: { name?: string; isBot?: boolean; id?: string }[] }) => {
+        commit(prev => ({
+          ...prev,
+          players: prev.players.map((player, index) => {
+            const serverPlayer = data.players[index];
+            if (!serverPlayer) return player;
+            return {
+              ...player,
+              name: serverPlayer.name || player.name,
+              isBot: serverPlayer.isBot ?? player.isBot,
+              id: serverPlayer.id || player.id,
+            };
+          }),
+        }));
       };
 
-      const handlePeerAction = (data: { fromSocket: string; actionType: string; payload: any }) => {
-        console.log('[Multiplayer] Peer action:', data.actionType, data.payload);
+      const handlePeerAction = (data: { fromSocket: string; actionType: string; payload: {
+        players?: Player[];
+        wall?: Tile[];
+        dealerSeat?: number;
+        initialDrawnTile?: Tile;
+        seat?: number;
+        tile?: Tile;
+        claimType?: 'chi' | 'peng' | 'gang' | 'hu';
+        tiles?: Tile[];
+        action?: 'hu' | 'an_gang' | 'bu_gang';
+      } }) => {
         const { actionType, payload } = data;
 
-        if (actionType === 'start_round') {
-          // Sync full round deal from host
-          setGameState(prev => ({
+        if (actionType === 'start_round' && payload.players && payload.wall && payload.dealerSeat !== undefined) {
+          clearDrawTimer();
+          commit(prev => ({
             ...prev,
             phase: 'playing',
-            players: payload.players,
-            wall: payload.wall,
-            currentTurn: payload.dealerSeat,
-            dealerSeat: payload.dealerSeat,
+            players: payload.players!,
+            wall: payload.wall!,
+            currentTurn: payload.dealerSeat!,
+            dealerSeat: payload.dealerSeat!,
             lastDiscard: undefined,
             pendingClaims: {},
             lastDrawnTile: payload.initialDrawnTile,
             winResult: undefined,
+            log: [
+              `Multiplayer round started! Dealer is ${payload.players![payload.dealerSeat!].name}.`,
+              ...prev.log.slice(0, 30),
+            ],
           }));
           setAvailableActions([]);
-          addLog(`Multiplayer round started! Dealer is ${payload.players[payload.dealerSeat].name}.`);
-        } else if (actionType === 'discard') {
-          const { seat, tile } = payload;
-          discardTile(seat, tile);
-        } else if (actionType === 'draw') {
-          const { seat } = payload;
-          drawTileForSeat(seat);
-        } else if (actionType === 'claim') {
-          const { seat, claimType, tiles } = payload;
-          executeClaim(seat, claimType, tiles);
+        } else if (actionType === 'discard' && payload.seat !== undefined && payload.tile) {
+          performDiscard(payload.seat, payload.tile);
+        } else if (actionType === 'draw' && payload.seat !== undefined) {
+          performDraw(payload.seat);
+        } else if (actionType === 'claim' && payload.seat !== undefined && payload.claimType) {
+          performClaim(payload.seat, payload.claimType, payload.tiles);
+        } else if (actionType === 'self_action' && payload.seat !== undefined && payload.action) {
+          const prev = stateRef.current;
+          const next = commit(current => applySelfAction(current, payload.seat!, payload.action!, payload.tile));
+          if (next !== prev && payload.action !== 'hu') sound.playTileClick();
         }
       };
 
@@ -850,120 +423,14 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       socket.on('peer_game_action', handlePeerAction);
 
       return () => {
-        socket.off('joined_room', handleJoinedRoom);
-        socket.off('room_updated', handleRoomUpdated);
-        socket.off('peer_game_action', handlePeerAction);
+        socket?.off('joined_room', handleJoinedRoom);
+        socket?.off('room_updated', handleRoomUpdated);
+        socket?.off('peer_game_action', handlePeerAction);
       };
-    } catch (err) {
-      console.error('Socket setup error:', err);
+    } catch (error) {
+      console.error('Socket setup error:', error);
     }
-  }, [roomId, playerName, discardTile, drawTileForSeat, executeClaim, addLog]);
-
-  // Wrapped actions that also broadcast to peers when in multiplayer room
-  const handleMultiplayerStartRound = useCallback(() => {
-    sound.playShuffle();
-    const fullDeck = generateTileDeck(stateRef.current.settings.includeFlowers);
-    const shuffled = shuffleDeck(fullDeck);
-
-    const regularTiles: Tile[] = [];
-    const flowersBySeat: { [seat: number]: Tile[] } = { 0: [], 1: [], 2: [], 3: [] };
-
-    const hands: Tile[][] = [[], [], [], []];
-    let tileIndex = 0;
-
-    for (let round = 0; round < 3; round++) {
-      for (let s = 0; s < 4; s++) {
-        for (let t = 0; t < 4; t++) {
-          hands[s].push(shuffled[tileIndex++]);
-        }
-      }
-    }
-    for (let s = 0; s < 4; s++) {
-      hands[s].push(shuffled[tileIndex++]);
-    }
-    const dealer = stateRef.current.dealerSeat;
-    const initialDrawnTile = shuffled[tileIndex++];
-    hands[dealer].push(initialDrawnTile);
-
-    const wall = shuffled.slice(tileIndex);
-
-    const updatedPlayers = stateRef.current.players.map((p, idx) => ({
-      ...p,
-      hand: hands[idx],
-      melds: [],
-      flowers: flowersBySeat[idx] || [],
-      discards: [],
-    }));
-
-    setGameState(prev => ({
-      ...prev,
-      phase: 'playing',
-      players: updatedPlayers,
-      wall,
-      currentTurn: dealer,
-      lastDiscard: undefined,
-      pendingClaims: {},
-      lastDrawnTile: initialDrawnTile,
-      winResult: undefined,
-    }));
-
-    setAvailableActions([]);
-    addLog(`Round started! Dealer is ${updatedPlayers[dealer].name}.`);
-
-    if (roomId) {
-      try {
-        const socket = getSocket();
-        socket.emit('game_action', {
-          roomId,
-          actionType: 'start_round',
-          payload: {
-            players: updatedPlayers,
-            wall,
-            dealerSeat: dealer,
-            initialDrawnTile,
-          },
-        });
-      } catch (e) {
-        console.error('Failed to emit start_round:', e);
-      }
-    }
-  }, [roomId, addLog]);
-
-  const handlePlayerDiscard = useCallback((tile: Tile) => {
-    const seat = localSeatRef.current;
-    discardTile(seat, tile);
-
-    if (roomId) {
-      try {
-        const socket = getSocket();
-        socket.emit('game_action', {
-          roomId,
-          actionType: 'discard',
-          payload: { seat, tile },
-        });
-      } catch (e) {
-        console.error('Failed to emit discard:', e);
-      }
-    }
-  }, [roomId, discardTile]);
-
-  const handlePlayerClaim = useCallback((type: 'chi' | 'peng' | 'gang' | 'hu', tiles?: Tile[]) => {
-    const seat = localSeatRef.current;
-    executeClaim(seat, type, tiles);
-
-    if (roomId) {
-      try {
-        const socket = getSocket();
-        socket.emit('game_action', {
-          roomId,
-          actionType: 'claim',
-          payload: { seat, claimType: type, tiles },
-        });
-      } catch (e) {
-        console.error('Failed to emit claim:', e);
-      }
-    }
-  }, [roomId, executeClaim]);
+  }, [roomId, playerName, clearDrawTimer, commit, performClaim, performDiscard, performDraw]);
 
   return {
     gameState,
@@ -973,7 +440,7 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     availableActions,
     botStatusMessages,
     timeLeft,
-    startNewRound: roomId ? handleMultiplayerStartRound : startNewRound,
+    startNewRound,
     discardTile: handlePlayerDiscard,
     executeClaim: handlePlayerClaim,
     handlePass,

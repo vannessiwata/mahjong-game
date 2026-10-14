@@ -381,12 +381,16 @@ export function calculateFans(
     }
   }
 
-  // Big Three Dragons (8 Fan) or Little Three Dragons (5 Fan)
+  // Big Three Dragons (8 Fan) replaces the three pung fans.
+  // Little Three Dragons (5 Fan) replaces the two pung fans when the third dragon is a pair.
   if (dragonPungsCount === 3) {
-    // Override individual dragon pungs with Big Three Dragons
     const filtered = fans.filter(f => !f.name.includes('Dragon Pung'));
     fans.length = 0;
     fans.push(...filtered, { name: 'Big Three Dragons', chinese: '大三元', fan: 8 });
+  } else if (dragonPungsCount === 2 && hasLittleThreeDragons(allTiles, dragonCounts)) {
+    const filtered = fans.filter(f => !f.name.includes('Dragon Pung'));
+    fans.length = 0;
+    fans.push(...filtered, { name: 'Little Three Dragons', chinese: '小三元', fan: 5 });
   }
 
   // Seat Wind Pung (1 Fan)
@@ -408,8 +412,10 @@ export function calculateFans(
     fans.push({ name: 'Self-Draw', chinese: '自摸', fan: 1 });
   }
 
-  // Concealed Hand / Men Qing (1 Fan)
-  if (melds.length === 0 && !isZimo) {
+  // Concealed Hand / Men Qing (1 Fan). A concealed kong is still closed;
+  // chow, pung, and exposed or added kongs open the hand.
+  const hasExposedMeld = melds.some(m => m.type !== 'an_gang');
+  if (!hasExposedMeld && !isZimo) {
     fans.push({ name: 'Concealed Hand', chinese: '門前清', fan: 1 });
   }
 
@@ -439,6 +445,13 @@ export function calculateFans(
     totalFan,
     qualifies: totalFan >= minFan,
   };
+}
+
+function hasLittleThreeDragons(tiles: Tile[], pungCounts: Map<string, number>): boolean {
+  const counts = getTileCounts(tiles);
+  const missing = [1, 2, 3].filter(value => !(pungCounts.get(`dragon_${value}`) || 0));
+  if (missing.length !== 1) return false;
+  return (counts.get(`dragon_${missing[0]}`) || 0) === 2;
 }
 
 function countPungsByType(tiles: Tile[], melds: Meld[], suit: string): Map<string, number> {

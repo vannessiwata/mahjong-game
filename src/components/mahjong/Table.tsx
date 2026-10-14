@@ -23,10 +23,11 @@ interface TableProps {
   roomId?: string | null;
   playerName?: string;
   minFan?: number;
+  includeFlowers?: boolean;
   onBackToLobby?: () => void;
 }
 
-export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, onBackToLobby }) => {
+export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, includeFlowers, onBackToLobby }) => {
   const {
     gameState,
     localPlayerSeat,
@@ -38,7 +39,7 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, onBack
     executeClaim,
     handlePass,
     handleSelfAction,
-  } = useMahjongGame({ roomId, playerName, minFan });
+  } = useMahjongGame({ roomId, playerName, minFan, includeFlowers });
 
   const [isMuted, setIsMuted] = useState(false);
   const [showRules, setShowRules] = useState(false);
@@ -80,11 +81,6 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, onBack
   const handleStartOrRestart = () => {
     setIsModalDismissed(false);
     startNewRound();
-  };
-
-  // Wrap discardTile to always pass localPlayerSeat
-  const handleDiscard = (tile: import('@/lib/mahjong/types').Tile) => {
-    discardTile(localPlayerSeat, tile);
   };
 
   return (
@@ -247,7 +243,7 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, onBack
               roundWind={gameState.prevWind}
               minFan={gameState.settings.minFan}
               timeLeft={timeLeft}
-              onDiscard={handleDiscard}
+              onDiscard={discardTile}
               onSelfAction={handleSelfAction}
             />
           )}
