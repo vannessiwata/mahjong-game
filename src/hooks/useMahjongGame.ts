@@ -6,6 +6,7 @@ import { botChooseDiscard, botDecideSelfAction } from '@/lib/mahjong/bot';
 import { sound } from '@/lib/mahjong/audio';
 import {
   applyClaim,
+  applyClaimAnswer,
   applyDiscard,
   applyDraw,
   applySelfAction,
@@ -36,6 +37,9 @@ const CLAIM_LABEL: Record<'chi' | 'peng' | 'gang' | 'hu', string> = {
   gang: 'KONG! (槓)',
   hu: 'HU! (食糊)',
 };
+
+/** How long the host waits for another human to pung, chow, kong, or pass. */
+const REMOTE_CLAIM_MS = 30000;
 
 export function useMahjongGame(options?: UseMahjongGameOptions) {
   const roomId = options?.roomId || null;
@@ -76,6 +80,10 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
   const localSeatRef = useRef(localPlayerSeat);
   localSeatRef.current = localPlayerSeat;
   const pendingDrawTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const claimTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const claimTimerForRef = useRef<string | null>(null);
+  const botClaimsRef = useRef<{ id: string; claims: { seat: number; type: 'hu' | 'gang' | 'peng' | 'chi'; tiles?: Tile[] }[] } | null>(null);
+  const settleRef = useRef<() => void>(() => {});
 
   const commit = useCallback((producer: (prev: GameState) => GameState) => {
     const next = producer(stateRef.current);
@@ -94,6 +102,14 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       clearTimeout(pendingDrawTimerRef.current);
       pendingDrawTimerRef.current = null;
     }
+  }, []);
+
+  const clearClaimTimer = useCallback(() => {
+    if (claimTimerRef.current !== null) {
+      clearTimeout(claimTimerRef.current);
+      claimTimerRef.current = null;
+    }
+    claimTimerForRef.current = null;
   }, []);
 
   const addLog = useCallback((msg: string) => {
@@ -123,6 +139,7 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
   const startNewRound = useCallback(() => {
     sound.playShuffle();
     clearDrawTimer();
+    clearClaimTimer();
     const next = commit(prev => startRound(prev));
     setAvailableActions([]);
     if (!roomId) return;
@@ -132,7 +149,7 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
       dealerSeat: next.dealerSeat,
       initialDrawnTile: next.lastDrawnTile,
     });
-  }, [clearDrawTimer, commit, emitAction, roomId]);
+  }, [clearClaimTimer, clearDrawTimer, commit, emitAction, roomId]);
 
   const performDiscard = useCallback((seat: number, tile: Tile) => {
     const prev = stateRef.current;
@@ -148,8 +165,10 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     const next = commit(current => applyDraw(current, seat));
     if (next === prev) return false;
     sound.playTileClick();
+    setAvailableActions([]);
+    clearClaimTimer();
     return true;
-  }, [commit]);
+  }, [clearClaimTimer, commit]);
 
   const performClaim = useCallback((
     seat: number,
@@ -161,10 +180,11 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     const next = commit(current => applyClaim(current, seat, claimType, tiles));
     if (next === prev) return false;
     setAvailableActions([]);
+    clearClaimTimer();
     sound.playClaimChime();
     if (next.players[seat]?.isBot) setBotStatus(seat, CLAIM_LABEL[claimType]);
     return true;
-  }, [clearDrawTimer, commit, setBotStatus]);
+  }, [clearClaimTimer, clearDrawTimer, commit, setBotStatus]);
 
   const scheduleDraw = useCallback((seat: number, delay: number) => {
     clearDrawTimer();
@@ -175,64 +195,87 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     }, delay);
   }, [clearDrawTimer, emitAction, performDraw]);
 
-  const resolveClaimWindow = useCallback((ignoreHuman: boolean) => {
+  const settleClaimWindow = useCallback(() => {
     const state = stateRef.current;
     if (state.phase !== 'claim_window' || !state.lastDiscard) return;
-    const isHost = localSeatRef.current === 0;
-    if (roomId && !isHost) return;
 
-    const { autoClaim } = evaluateClaimWindow(state, localSeatRef.current, { ignoreHuman });
-    if (autoClaim) {
-      const applied = performClaim(autoClaim.seat, autoClaim.type, autoClaim.tiles);
+    const authority = !roomId || localSeatRef.current === 0;
+    const discardId = state.lastDiscard.tile.id;
+    const saved = botClaimsRef.current;
+    const replayBots = saved?.id === discardId
+      ? (bot: Player) => {
+          const known = saved.claims.find(claim => claim.seat === bot.seat);
+          return known ? { type: known.type, tiles: known.tiles } : { type: 'pass' as const };
+        }
+      : undefined;
+    // Guests show their own buttons without rolling bots. The host's roll is authoritative.
+    const decideBot = authority ? replayBots : () => ({ type: 'pass' as const });
+    const view = evaluateClaimWindow(state, localSeatRef.current, decideBot ? { decideBot } : undefined);
+    if (authority && saved?.id !== discardId) {
+      botClaimsRef.current = { id: discardId, claims: view.botClaims };
+    }
+
+    setAvailableActions(view.humanActions);
+    if (!authority) return;
+
+    if (view.humanActions.length > 0 || view.waitingSeats.length > 0) {
+      if (view.waitingSeats.length > 0 && claimTimerForRef.current !== discardId) {
+        if (claimTimerRef.current) clearTimeout(claimTimerRef.current);
+        claimTimerForRef.current = discardId;
+        claimTimerRef.current = setTimeout(() => {
+          claimTimerRef.current = null;
+          const latest = stateRef.current;
+          if (latest.phase !== 'claim_window' || latest.lastDiscard?.tile.id !== discardId) return;
+          const stillWaiting = evaluateClaimWindow(latest, localSeatRef.current, {
+            decideBot: (bot: Player) => {
+              const known = botClaimsRef.current?.claims.find(claim => claim.seat === bot.seat);
+              return known ? { type: known.type, tiles: known.tiles } : { type: 'pass' as const };
+            },
+          }).waitingSeats;
+          if (stillWaiting.length > 0) {
+            commit(current => stillWaiting.reduce(
+              (next, seat) => applyClaimAnswer(next, seat, 'pass'),
+              current,
+            ));
+            for (const seat of stillWaiting) emitAction('claim_pass', { seat });
+          }
+          settleRef.current();
+        }, REMOTE_CLAIM_MS);
+      }
+      return;
+    }
+
+    clearClaimTimer();
+    if (view.autoClaim) {
+      const applied = performClaim(view.autoClaim.seat, view.autoClaim.type, view.autoClaim.tiles);
       if (applied) {
         emitAction('claim', {
-          seat: autoClaim.seat,
-          claimType: autoClaim.type,
-          tiles: autoClaim.tiles,
+          seat: view.autoClaim.seat,
+          claimType: view.autoClaim.type,
+          tiles: view.autoClaim.tiles,
         });
       }
       return;
     }
 
-    scheduleDraw((state.lastDiscard.seat + 1) % 4, ignoreHuman ? 400 : 500);
-  }, [emitAction, performClaim, roomId, scheduleDraw]);
-
-  const processDiscardClaims = useCallback(() => {
-    const state = stateRef.current;
-    if (state.phase !== 'claim_window' || !state.lastDiscard) return;
-
-    // One evaluation: bot choices use Math.random, so a second pass could disagree.
-    const { humanActions, autoClaim } = evaluateClaimWindow(state, localSeatRef.current);
-    if (humanActions.length > 0) {
-      setAvailableActions(humanActions);
-      return;
-    }
-
-    setAvailableActions([]);
-    if (roomId && localSeatRef.current !== 0) return;
-    if (autoClaim) {
-      const applied = performClaim(autoClaim.seat, autoClaim.type, autoClaim.tiles);
-      if (applied) {
-        emitAction('claim', {
-          seat: autoClaim.seat,
-          claimType: autoClaim.type,
-          tiles: autoClaim.tiles,
-        });
-      }
-      return;
-    }
-    scheduleDraw((state.lastDiscard.seat + 1) % 4, 500);
-  }, [emitAction, performClaim, roomId, scheduleDraw]);
+    scheduleDraw((state.lastDiscard.seat + 1) % 4, 400);
+  }, [clearClaimTimer, commit, emitAction, performClaim, roomId, scheduleDraw]);
+  settleRef.current = settleClaimWindow;
 
   const handlePass = useCallback(() => {
-    setAvailableActions([]);
     const state = stateRef.current;
-    if (state.phase !== 'claim_window' || !state.lastDiscard) return;
-    // Remote seats only clear their prompt. The host resolves bots and the draw,
-    // otherwise two clients would each pull a tile.
-    if (roomId && localSeatRef.current !== 0) return;
-    resolveClaimWindow(true);
-  }, [resolveClaimWindow, roomId]);
+    const seat = localSeatRef.current;
+    if (state.phase !== 'claim_window' || !state.lastDiscard) {
+      setAvailableActions([]);
+      return;
+    }
+    // A pass has to be recorded before the next draw. Guests tell the host;
+    // otherwise the host used to draw through their pung or chow.
+    commit(current => applyClaimAnswer(current, seat, 'pass'));
+    setAvailableActions([]);
+    emitAction('claim_pass', { seat });
+    if (!roomId || seat === 0) settleRef.current();
+  }, [commit, emitAction, roomId]);
 
   const handleSelfAction = useCallback((action: 'hu' | 'an_gang' | 'bu_gang', tile?: Tile) => {
     const seat = localSeatRef.current;
@@ -251,9 +294,41 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
 
   const handlePlayerClaim = useCallback((type: 'chi' | 'peng' | 'gang' | 'hu', tiles?: Tile[]) => {
     const seat = localSeatRef.current;
-    if (!performClaim(seat, type, tiles)) return;
-    emitAction('claim', { seat, claimType: type, tiles });
-  }, [emitAction, performClaim]);
+    const state = stateRef.current;
+    if (state.phase !== 'claim_window' || !state.lastDiscard) {
+      setAvailableActions([]);
+      return;
+    }
+
+    const discardId = state.lastDiscard.tile.id;
+    const saved = botClaimsRef.current;
+    const replay = saved?.id === discardId
+      ? (bot: Player) => {
+          const known = saved.claims.find(claim => claim.seat === bot.seat);
+          return known ? { type: known.type, tiles: known.tiles } : { type: 'pass' as const };
+        }
+      : undefined;
+    const projection = applyClaimAnswer(state, seat, { type, tiles });
+    const projected = evaluateClaimWindow(projection, seat, replay ? { decideBot: replay } : undefined);
+    const applyNow = projected.waitingSeats.length === 0
+      && projected.autoClaim?.seat === seat
+      && projected.autoClaim.type === type;
+    const authority = !roomId || seat === 0;
+
+    // The host applies a winning claim immediately. A guest only announces it;
+    // the host applies the same claim and sends it back, so two clients cannot
+    // each take the discard. A lower claim waits until a higher seat passes.
+    if (applyNow && authority) {
+      if (!performClaim(seat, type, tiles)) setAvailableActions([]);
+      else emitAction('claim', { seat, claimType: type, tiles });
+      return;
+    }
+
+    commit(current => applyClaimAnswer(current, seat, { type, tiles }));
+    setAvailableActions([]);
+    emitAction('claim_intent', { seat, claimType: type, tiles });
+    if (authority) settleRef.current();
+  }, [commit, emitAction, performClaim, roomId]);
 
   useEffect(() => {
     if (gameState.phase !== 'playing') return;
@@ -333,13 +408,15 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
   }, [gameState.phase, gameState.currentTurn, commit, emitAction, roomId]);
 
   useEffect(() => {
-    if (gameState.phase !== 'claim_window') return;
+    if (gameState.phase !== 'claim_window') {
+      setAvailableActions([]);
+      clearClaimTimer();
+      return;
+    }
     clearDrawTimer();
-    const timer = setTimeout(() => {
-      processDiscardClaims();
-    }, 200);
+    const timer = setTimeout(() => settleRef.current(), 200);
     return () => clearTimeout(timer);
-  }, [gameState.phase, gameState.lastDiscard, processDiscardClaims, clearDrawTimer]);
+  }, [gameState.phase, gameState.lastDiscard, gameState.pendingClaims, clearClaimTimer, clearDrawTimer]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -388,6 +465,7 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
 
         if (actionType === 'start_round' && payload.players && payload.wall && payload.dealerSeat !== undefined) {
           clearDrawTimer();
+          clearClaimTimer();
           commit(prev => ({
             ...prev,
             phase: 'playing',
@@ -411,6 +489,15 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
           performDraw(payload.seat);
         } else if (actionType === 'claim' && payload.seat !== undefined && payload.claimType) {
           performClaim(payload.seat, payload.claimType, payload.tiles);
+        } else if (actionType === 'claim_intent' && payload.seat !== undefined && payload.claimType) {
+          commit(current => applyClaimAnswer(current, payload.seat!, {
+            type: payload.claimType!,
+            tiles: payload.tiles,
+          }));
+          if (localSeatRef.current === 0) settleRef.current();
+        } else if (actionType === 'claim_pass' && payload.seat !== undefined) {
+          commit(current => applyClaimAnswer(current, payload.seat!, 'pass'));
+          if (localSeatRef.current === 0) settleRef.current();
         } else if (actionType === 'self_action' && payload.seat !== undefined && payload.action) {
           const prev = stateRef.current;
           const next = commit(current => applySelfAction(current, payload.seat!, payload.action!, payload.tile));
@@ -430,7 +517,7 @@ export function useMahjongGame(options?: UseMahjongGameOptions) {
     } catch (error) {
       console.error('Socket setup error:', error);
     }
-  }, [roomId, playerName, clearDrawTimer, commit, performClaim, performDiscard, performDraw]);
+  }, [roomId, playerName, clearClaimTimer, clearDrawTimer, commit, performClaim, performDiscard, performDraw]);
 
   return {
     gameState,

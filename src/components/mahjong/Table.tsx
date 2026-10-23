@@ -250,11 +250,13 @@ export const Table: React.FC<TableProps> = ({ roomId, playerName, minFan, includ
         </div>
 
         {/* FLOATING ACTION PROMPT (Hu, Gang, Peng, Chi, Pass) */}
-        <ActionBar
-          actions={availableActions}
-          onClaim={executeClaim}
-          onPass={handlePass}
-        />
+        {gameState.phase === 'claim_window' && (
+          <ActionBar
+            actions={availableActions}
+            onClaim={executeClaim}
+            onPass={handlePass}
+          />
+        )}
       </main>
 
       {/* WINNING / ROUND END MODAL */}

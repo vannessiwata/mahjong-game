@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { botChooseDiscard, botDecideClaim, botDecideSelfAction } from './bot';
 import {
   applyClaim,
+  applyClaimAnswer,
   applyDiscard,
   applyDraw,
   applySelfAction,
@@ -285,7 +286,11 @@ describe('claim priority', () => {
     const discard = tile('wan', 5, 'discard');
     const players = makePlayers(false);
     players[1] = { ...players[1], isBot: false, hand: [tile('wan', 3, 'a'), tile('wan', 4, 'b'), ...filler('h1', 11)] };
-    players[2] = { ...players[2], isBot: true, hand: filler('h2', 13) };
+    players[2] = {
+      ...players[2],
+      isBot: true,
+      hand: [tile('wan', 5, 'b1'), tile('wan', 5, 'b2'), ...filler('h2', 11, { suit: 'wan', value: 5 })],
+    };
     players[0] = { ...players[0], isBot: true, hand: filler('h0', 13), discards: [discard] };
     players[3] = { ...players[3], isBot: true, hand: filler('h3', 13) };
     const state = makeState({
@@ -311,7 +316,10 @@ describe('claim priority', () => {
     const players = makePlayers(true);
     players[1] = { ...players[1], isBot: false, hand };
     players[0] = { ...players[0], hand: filler('h0', 13), discards: [discard] };
-    players[2] = { ...players[2], hand: filler('h2', 13) };
+    players[2] = {
+      ...players[2],
+      hand: [tile('wind', 1, 'bot-a'), tile('wind', 1, 'bot-b'), ...filler('h2', 11)],
+    };
     players[3] = { ...players[3], hand: filler('h3', 13) };
     const state = makeState({
       phase: 'claim_window',
@@ -323,6 +331,109 @@ describe('claim priority', () => {
     });
     assert.equal(result.autoClaim, null);
     assert.ok(result.humanActions.some(action => action.type === 'hu'));
+  });
+
+  it('after one player pungs, a guest seat can pung a later discard', () => {
+    const players = makePlayers(true);
+    const red = tile('dragon', 1, 'discard-red');
+    players[0] = {
+      ...players[0],
+      isBot: false,
+      hand: filler('h0', 13),
+      discards: [red],
+    };
+    players[2] = {
+      ...players[2],
+      isBot: false,
+      hand: [
+        tile('dragon', 1, 'a-red-1'),
+        tile('dragon', 1, 'a-red-2'),
+        tile('dragon', 3, 'a-white'),
+        ...filler('a', 10),
+      ],
+    };
+    players[1] = {
+      ...players[1],
+      isBot: false,
+      hand: [tile('dragon', 3, 'b-white-1'), tile('dragon', 3, 'b-white-2'), ...filler('b', 11)],
+    };
+    players[3] = { ...players[3], hand: filler('h3', 13) };
+
+    const firstWindow = makeState({
+      phase: 'claim_window',
+      players,
+      wall: [tile('tong', 9, 'wall-1'), ...filler('wall', 4)],
+      lastDiscard: { tile: red, seat: 0 },
+    });
+    const punged = applyClaim(firstWindow, 2, 'peng');
+    assert.equal(punged.players[2].melds[0]?.type, 'peng');
+    assert.equal(playableCount(punged.players[2]), 14);
+
+    const white = punged.players[2].hand.find(candidate => candidate.id === 'a-white');
+    assert.ok(white);
+    const secondWindow = applyDiscard(punged, 2, white!);
+    assert.equal(secondWindow.phase, 'claim_window');
+    assert.equal(playableCount(secondWindow.players[1]), 13);
+
+    const hostView = evaluateClaimWindow(secondWindow, 0);
+    assert.equal(hostView.autoClaim, null);
+    assert.ok(hostView.waitingSeats.includes(1));
+    assert.equal(applyDraw(secondWindow, (2 + 1) % 4), secondWindow);
+
+    const guestView = evaluateClaimWindow(secondWindow, 1);
+    assert.ok(guestView.humanActions.some(action => action.type === 'peng'));
+
+    const guestPung = applyClaim(secondWindow, 1, 'peng');
+    assert.equal(guestPung.players[1].hand.length, 11);
+    assert.equal(guestPung.players[1].melds[0]?.tiles.length, 3);
+    assert.equal(playableCount(guestPung.players[1]), 14);
+    assert.equal(describeHandProblem(guestPung), null);
+
+    const passed = applyClaimAnswer(secondWindow, 1, 'pass');
+    const drawn = applyDraw(passed, 3);
+    assert.notEqual(drawn, passed);
+    assert.equal(drawn.players[1].hand.length, 13);
+    assert.equal(describeHandProblem(drawn), null);
+  });
+
+  it('keeps a two-option chow open for the next player and uses the option they pick', () => {
+    const discard = tile('wan', 6, 'discard-6');
+    const five = tile('wan', 5, 'chi-5');
+    const seven = tile('wan', 7, 'chi-7');
+    const eight = tile('wan', 8, 'chi-8');
+    const players = makePlayers(true);
+    players[0] = { ...players[0], isBot: false, hand: filler('h0', 13), discards: [discard] };
+    players[1] = { ...players[1], isBot: false, hand: [five, seven, eight, ...filler('h1', 10)] };
+    players[2] = { ...players[2], hand: filler('h2', 13) };
+    players[3] = { ...players[3], hand: filler('h3', 13) };
+    const state = makeState({
+      phase: 'claim_window',
+      players,
+      wall: [tile('tong', 2, 'wall-next'), ...filler('wall', 4)],
+      lastDiscard: { tile: discard, seat: 0 },
+    });
+
+    const guestView = evaluateClaimWindow(state, 1);
+    const chow = guestView.humanActions.find(action => action.type === 'chi');
+    assert.equal(chow?.options?.length, 2);
+    const hostView = evaluateClaimWindow(state, 0);
+    assert.ok(hostView.waitingSeats.includes(1));
+    assert.equal(hostView.autoClaim, null);
+    // Seat 1 is the seat that would draw. Taking that tile closes the chow.
+    assert.equal(applyDraw(state, 1), state);
+
+    const chosen = chow!.options!.find(option => option.some(tile => tile.id === 'chi-8'))!;
+    const claimed = applyClaim(state, 1, 'chi', [...chosen, discard]);
+    assert.equal(claimed.players[1].hand.some(tile => tile.id === 'chi-5'), true);
+    assert.equal(claimed.players[1].hand.some(tile => tile.id === 'chi-7'), false);
+    assert.equal(claimed.players[1].hand.some(tile => tile.id === 'chi-8'), false);
+    assert.equal(claimed.players[1].hand.length, 11);
+    assert.deepEqual(
+      claimed.players[1].melds[0]?.tiles.map(tile => tile.id).sort(),
+      ['chi-7', 'chi-8', 'discard-6'],
+    );
+    assert.equal(playableCount(claimed.players[1]), 14);
+    assert.equal(describeHandProblem(claimed), null);
   });
 });
 

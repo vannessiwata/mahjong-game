@@ -228,12 +228,61 @@ export function startRound(state: GameState): GameState {
   };
 }
 
+function legalClaimActions(state: GameState, player: Player, tile: Tile, fromSeat: number): AvailableAction[] {
+  const actions: AvailableAction[] = [];
+  if (isWinningHand(player.hand, tile)) {
+    const { qualifies } = calculateFans(
+      player.hand,
+      player.melds,
+      tile,
+      false,
+      player.seat,
+      state.prevWind,
+      player.flowers,
+      state.settings.minFan,
+    );
+    if (qualifies) actions.push({ type: 'hu', tile });
+  }
+  if (canExposedGang(player.hand, tile)) actions.push({ type: 'gang', tile });
+  if (canPeng(player.hand, tile)) actions.push({ type: 'peng', tile });
+  if (seatDistance(fromSeat, player.seat) === 1) {
+    const chiOptions = getChiOptions(player.hand, tile);
+    if (chiOptions.length > 0) actions.push({ type: 'chi', options: chiOptions, tile });
+  }
+  return actions;
+}
+
+function bestActionType(actions: AvailableAction[]): AutoClaim['type'] {
+  return actions.reduce((best, action) => (
+    claimOutranks({ seat: 0, type: action.type }, { seat: 0, type: best }, 0) ? action.type : best
+  ), actions[0].type);
+}
+
+/**
+ * True while a human can still take this discard. A wall draw would close the
+ * window and either swallow their pung or, if the draw is theirs, leave them
+ * over the waiting count so every later claim is refused.
+ */
+function humanClaimStillOpen(state: GameState): boolean {
+  if (state.phase !== 'claim_window' || !state.lastDiscard) return false;
+  const { tile, seat: fromSeat } = state.lastDiscard;
+  return state.players.some(player => {
+    if (player.isBot || player.seat === fromSeat || !needsDraw(player)) return false;
+    const answer = state.pendingClaims[player.seat];
+    if (answer === 'pass') return false;
+    const actions = legalClaimActions(state, player, tile, fromSeat);
+    if (!answer) return actions.length > 0;
+    return actions.some(action => action.type === answer.type);
+  });
+}
+
 export function applyDraw(state: GameState, seat: number): GameState {
   // A claim-window draw is only the next seat after a discarded tile.
   // A playing-phase draw is only the kong replacement for the seat already to move.
   // Anything else (a stale timer, a second pull) would leave two players holding 14.
   if (state.phase === 'claim_window') {
     if (!state.lastDiscard || seat !== (state.lastDiscard.seat + 1) % 4) return state;
+    if (humanClaimStillOpen(state)) return state;
   } else if (state.phase === 'playing') {
     if (state.currentTurn !== seat) return state;
   } else {
@@ -542,6 +591,26 @@ export function applySelfAction(
   return state;
 }
 
+export interface ClaimResolution {
+  humanActions: AvailableAction[];
+  autoClaim: AutoClaim | null;
+  /** Other humans who can still claim this discard and have not answered. */
+  waitingSeats: number[];
+  /** Bot choices from this evaluation. Replay these instead of rolling the bot again. */
+  botClaims: AutoClaim[];
+}
+
+const NO_CLAIM: ClaimResolution = { humanActions: [], autoClaim: null, waitingSeats: [], botClaims: [] };
+
+export type ClaimAnswer = 'pass' | { type: 'chi' | 'peng' | 'gang' | 'hu'; tiles?: Tile[] };
+
+/** Record a human pass or a claim that has to wait for a higher seat. Does not close the window. */
+export function applyClaimAnswer(state: GameState, seat: number, answer: ClaimAnswer): GameState {
+  if (state.phase !== 'claim_window' || !state.lastDiscard) return state;
+  if (seat === state.lastDiscard.seat || state.pendingClaims[seat]) return state;
+  return { ...state, pendingClaims: { ...state.pendingClaims, [seat]: answer } };
+}
+
 export function evaluateClaimWindow(
   state: GameState,
   localSeat: number,
@@ -549,64 +618,66 @@ export function evaluateClaimWindow(
     ignoreHuman?: boolean;
     decideBot?: typeof botDecideClaim;
   },
-): { humanActions: AvailableAction[]; autoClaim: AutoClaim | null } {
-  if (state.phase !== 'claim_window' || !state.lastDiscard) {
-    return { humanActions: [], autoClaim: null };
-  }
+): ClaimResolution {
+  if (state.phase !== 'claim_window' || !state.lastDiscard) return NO_CLAIM;
 
   const { tile, seat: fromSeat } = state.lastDiscard;
   const decideBot = options?.decideBot ?? botDecideClaim;
-  const humanActions: AvailableAction[] = [];
   const botClaims: AutoClaim[] = [];
+  const decided: AutoClaim[] = [];
+  const pending: { seat: number; actions: AvailableAction[] }[] = [];
 
   for (const player of state.players) {
     if (player.seat === fromSeat || !needsDraw(player)) continue;
+    const actions = legalClaimActions(state, player, tile, fromSeat);
+    if (actions.length === 0) continue;
 
-    if (!player.isBot && player.seat === localSeat) {
-      if (options?.ignoreHuman) continue;
-      if (isWinningHand(player.hand, tile)) {
-        const { qualifies } = calculateFans(
-          player.hand,
-          player.melds,
-          tile,
-          false,
-          player.seat,
-          state.prevWind,
-          player.flowers,
-          state.settings.minFan,
-        );
-        if (qualifies) humanActions.push({ type: 'hu', tile });
-      }
-      if (canExposedGang(player.hand, tile)) humanActions.push({ type: 'gang', tile });
-      if (canPeng(player.hand, tile)) humanActions.push({ type: 'peng', tile });
-      if (seatDistance(fromSeat, player.seat) === 1) {
-        const chiOptions = getChiOptions(player.hand, tile);
-        if (chiOptions.length > 0) humanActions.push({ type: 'chi', options: chiOptions, tile });
-      }
+    // The seat at this screen is a person even if a room update has not cleared isBot yet.
+    const isHuman = player.seat === localSeat || !player.isBot;
+    if (!isHuman) {
+      const decision = decideBot(player, tile, fromSeat, state.prevWind, state.settings.minFan);
+      if (decision.type === 'pass') continue;
+      if (decision.type === 'chi' && seatDistance(fromSeat, player.seat) !== 1) continue;
+      const claim = { seat: player.seat, type: decision.type, tiles: decision.tiles };
+      botClaims.push(claim);
+      decided.push(claim);
       continue;
     }
 
-    if (!player.isBot) continue;
-
-    const decision = decideBot(player, tile, fromSeat, state.prevWind, state.settings.minFan);
-    if (decision.type === 'pass') continue;
-    if (decision.type === 'chi' && seatDistance(fromSeat, player.seat) !== 1) continue;
-    botClaims.push({ seat: player.seat, type: decision.type, tiles: decision.tiles });
+    const ignored = options?.ignoreHuman && player.seat === localSeat;
+    const answer = state.pendingClaims[player.seat];
+    if (ignored || answer === 'pass') continue;
+    if (answer && actions.some(action => action.type === answer.type)) {
+      decided.push({ seat: player.seat, type: answer.type, tiles: answer.tiles });
+      continue;
+    }
+    if (answer) continue;
+    pending.push({ seat: player.seat, actions });
   }
 
-  let bestBot: AutoClaim | null = null;
-  for (const claim of botClaims) {
-    if (!bestBot || claimOutranks(claim, bestBot, fromSeat)) bestBot = claim;
+  let bestDecided: AutoClaim | null = null;
+  for (const claim of decided) {
+    if (!bestDecided || claimOutranks(claim, bestDecided, fromSeat)) bestDecided = claim;
   }
 
-  const surviving = bestBot
-    ? humanActions.filter(action =>
-        !claimOutranks(bestBot!, { seat: localSeat, type: action.type }, fromSeat),
-      )
-    : humanActions;
+  const waitingSeats = pending
+    .filter(entry => entry.seat !== localSeat)
+    .filter(entry => !bestDecided || !claimOutranks(
+      bestDecided,
+      { seat: entry.seat, type: bestActionType(entry.actions) },
+      fromSeat,
+    ))
+    .map(entry => entry.seat);
 
-  if (surviving.length > 0) return { humanActions: surviving, autoClaim: null };
-  return { humanActions: [], autoClaim: bestBot };
+  const localPending = pending.find(entry => entry.seat === localSeat);
+  const humanActions = (localPending?.actions ?? []).filter(action =>
+    !bestDecided || !claimOutranks(bestDecided, { seat: localSeat, type: action.type }, fromSeat),
+  );
+
+  if (humanActions.length > 0 || waitingSeats.length > 0) {
+    return { humanActions, autoClaim: null, waitingSeats, botClaims };
+  }
+  return { humanActions: [], autoClaim: bestDecided, waitingSeats: [], botClaims };
 }
 
 export function collectTileIds(state: GameState): string[] {
